@@ -100,6 +100,11 @@ import {
   computeLobbyInnerButtonStyle,
   resolveLobbyPageLayout,
 } from '../../utils/lobbyPageLayout';
+import {
+  saveMasterDataSnapshotAsync,
+  saveCharactersAsync,
+  saveSkinsAsync,
+} from '../../services/firebaseService';
 
 interface LobbyPortalViewProps {
   authUser: AuthSessionUser | null;
@@ -1895,11 +1900,18 @@ export const LobbyPortalView: React.FC<LobbyPortalViewProps> = ({
 
         setRestoreMessage(data.message || 'Respaldo restaurado con éxito en el servidor.');
 
-        // Immediately update client mirror in browser localStorage so sync checks respect this state as newest
+        // Immediately update client mirror in browser localStorage and Firestore
         if (data.latestBackup) {
           try {
             localStorage.setItem('weroll_cloud_mirror_snapshot_v2', JSON.stringify(data.latestBackup));
           } catch {}
+          saveMasterDataSnapshotAsync(data.latestBackup).catch(() => {});
+          if (Array.isArray(data.latestBackup.characters)) {
+            saveCharactersAsync(data.latestBackup.characters).catch(() => {});
+          }
+          if (Array.isArray(data.latestBackup.skins)) {
+            saveSkinsAsync(data.latestBackup.skins).catch(() => {});
+          }
           if (data.latestBackup.settings) {
             setAdminSettingsForm(data.latestBackup.settings);
             onSaveHostSettings(data.latestBackup.settings).catch(() => {});

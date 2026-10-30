@@ -325,7 +325,7 @@ apiRouter.post('/auth/login', (req, res) => {
   });
 });
 
-// Google / Firebase Auth Login or Register
+// Google / Firebase Auth Login or Check
 apiRouter.post('/auth/google-login', (req, res) => {
   const { uid, email, displayName, photoURL } = req.body || {};
   if (!email) {
@@ -336,21 +336,45 @@ apiRouter.post('/auth/google-login', (req, res) => {
   let user = dataStore.findUserByEmail(normEmail);
 
   if (!user) {
-    // Automatically register user with Google profile
-    const cleanName = (displayName || normEmail.split('@')[0] || 'Aventurero').trim();
+    // Hardcoded initial administrators are auto-approved
     const isAutoAdmin = normEmail === 'admin@weroll.app' || normEmail === 'cuellarangel2011@gmail.com';
-    user = dataStore.createUser({
-      email: normEmail,
-      displayName: cleanName,
-      avatarUrl: photoURL || undefined,
-      password: '',
-      role: isAutoAdmin ? 'moderator' : 'player',
-      playerType: isAutoAdmin ? 'both' : 'player',
-      appRole: isAutoAdmin ? 'admin' : 'client',
-      canPostInForum: true,
-      status: 'approved',
-      friends: [],
-    });
+    if (isAutoAdmin) {
+      user = dataStore.createUser({
+        email: normEmail,
+        displayName: (displayName || 'Administrador').trim(),
+        avatarUrl: photoURL || undefined,
+        password: '',
+        role: 'moderator',
+        playerType: 'both',
+        appRole: 'admin',
+        canPostInForum: true,
+        status: 'approved',
+        isGoogleLinked: true,
+        googleUid: uid,
+        friends: [],
+      });
+    } else {
+      // New Google users MUST go through onboarding and enter pending approval status!
+      return res.json({
+        success: true,
+        needsOnboarding: true,
+        googleData: {
+          uid: uid || '',
+          email: normEmail,
+          displayName: (displayName || normEmail.split('@')[0] || 'Aventurero').trim(),
+          photoURL: photoURL || '',
+        },
+      });
+    }
+  }
+
+  // Ensure isGoogleLinked is marked for Google sign-in
+  if (!user.isGoogleLinked) {
+    user.isGoogleLinked = true;
+    if (uid && !user.googleUid) {
+      user.googleUid = uid;
+    }
+    dataStore.saveUsers();
   }
 
   // Record presence & login
@@ -376,11 +400,120 @@ apiRouter.post('/auth/google-login', (req, res) => {
       requestedPlayerType: user.requestedPlayerType,
       playerTypeChangeRequested: Boolean(user.playerTypeChangeRequested),
       appRole: user.appRole || (user.role === 'admin' ? 'admin' : user.role === 'creator' ? 'creator' : user.role === 'moderator' ? 'moderator' : 'client'),
-      canPostInForum: true,
+      canPostInForum: user.appRole === 'admin' || user.appRole === 'creator' || user.appRole === 'moderator' ? true : Boolean(user.canPostInForum),
       forumPermissionsRequested: Boolean(user.forumPermissionsRequested),
       status: user.status,
+      isGoogleLinked: true,
+      registeredAt: user.registeredAt,
       ownedDlcIds: Array.from(new Set(['dlc-srd-5e-oficial', ...(user.ownedDlcIds || [])])),
       ownedSkinIds: Array.from(new Set(['skin-app-default', 'skin-player-default', 'skin-dm-default', ...(user.ownedSkinIds || [])])),
+    },
+  });
+});
+
+// Google Onboarding for new users (requires display name, 3-char @ID, playerType; saves with status: 'pending')
+apiRouter.post('/auth/google-onboard', (req, res) => {
+  const { uid, email, displayName, userTagId, playerType, photoURL } = req.body || {};
+  if (!email) {
+    return res.status(400).json({ error: 'Email requerido para onboarding.' });
+  }
+
+  const normEmail = email.trim().toLowerCase();
+  const existing = dataStore.findUserByEmail(normEmail);
+  if (existing) {
+    return res.status(400).json({ error: 'Esta cuenta ya está registrada. Inicia sesión directamente.' });
+  }
+
+  const cleanName = (displayName || normEmail.split('@')[0] || 'Aventurero').trim().slice(0, 100);
+  const cleanTagId = (userTagId || '123').replace(/^@+/, '').trim().slice(0, 3) || '123';
+  const cleanPlayerType = (['player', 'dm', 'both'].includes(playerType) ? playerType : 'player') as PlayerType;
+
+  // New Google accounts MUST start in pending status and cannot automatically be admin
+  const user = dataStore.createUser({
+    email: normEmail,
+    displayName: cleanName,
+    userTagId: cleanTagId,
+    avatarUrl: photoURL || undefined,
+    password: '',
+    role: 'player',
+    playerType: cleanPlayerType,
+    appRole: 'client',
+    canPostInForum: false,
+    status: 'pending',
+    isGoogleLinked: true,
+    googleUid: uid,
+    friends: [],
+  });
+
+  res.json({
+    success: true,
+    message: 'Cuenta creada con éxito. Tu cuenta está en estado pendiente de aprobación por un moderador o administrador.',
+    user: {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      userTagId: user.userTagId || '123',
+      fullTag: `${user.displayName}@${user.userTagId || '123'}`,
+      avatarUrl: user.avatarUrl,
+      friends: user.friends || [],
+      role: user.role,
+      playerType: user.playerType || 'player',
+      appRole: user.appRole || 'client',
+      canPostInForum: false,
+      status: user.status,
+      isGoogleLinked: true,
+      registeredAt: user.registeredAt,
+    },
+  });
+});
+
+// Link existing account to Google (updates email to Google email and sets isGoogleLinked: true)
+apiRouter.post('/auth/link-google', (req, res) => {
+  const { userId, googleEmail, googleUid } = req.body || {};
+  if (!userId || !googleEmail) {
+    return res.status(400).json({ error: 'ID de usuario y correo de Google requeridos.' });
+  }
+
+  const user = dataStore.findUserById(userId);
+  if (!user) {
+    return res.status(404).json({ error: 'Usuario no encontrado.' });
+  }
+
+  const normGoogleEmail = googleEmail.trim().toLowerCase();
+
+  // Check if another user is already using this google email
+  const existingGoogleUser = dataStore.findUserByEmail(normGoogleEmail);
+  if (existingGoogleUser && existingGoogleUser.id !== user.id) {
+    return res.status(400).json({
+      error: `El correo de Google (${normGoogleEmail}) ya está registrado en otra cuenta de WeRoll. No se puede vincular.`,
+    });
+  }
+
+  // Permanently update user email to Google email and set isGoogleLinked
+  user.email = normGoogleEmail;
+  user.isGoogleLinked = true;
+  if (googleUid) {
+    user.googleUid = googleUid;
+  }
+  dataStore.saveUsers();
+
+  res.json({
+    success: true,
+    message: `¡Cuenta vinculada con éxito! Tu correo de WeRoll ha sido actualizado permanentemente a ${normGoogleEmail}.`,
+    user: {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      userTagId: user.userTagId || '123',
+      fullTag: `${user.displayName}@${user.userTagId || '123'}`,
+      avatarUrl: user.avatarUrl,
+      friends: user.friends || [],
+      role: user.role,
+      playerType: user.playerType || 'player',
+      appRole: user.appRole || 'client',
+      status: user.status,
+      isGoogleLinked: true,
+      registeredAt: user.registeredAt,
     },
   });
 });
@@ -1310,6 +1443,7 @@ apiRouter.get('/admin/users', (req, res) => {
     passwordResetNote: u.passwordResetNote,
     ownedDlcIds: Array.from(new Set(['dlc-srd-5e-oficial', ...(u.ownedDlcIds || [])])),
     ownedSkinIds: Array.from(new Set(['skin-app-default', 'skin-player-default', 'skin-dm-default', ...(u.ownedSkinIds || [])])),
+    isGoogleLinked: Boolean(u.isGoogleLinked),
   }));
   res.json({ users });
 });
@@ -1579,6 +1713,7 @@ apiRouter.get('/moderator/users', (req, res) => {
     status: u.status,
     registeredAt: u.registeredAt,
     lastActiveAt: u.lastActiveAt,
+    isGoogleLinked: Boolean(u.isGoogleLinked),
   }));
   res.json({ users });
 });

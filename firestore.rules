@@ -27,11 +27,13 @@ service cloud.firestore {
     // Entity Validators
     function isValidUserProfile(data) {
       return data.keys().hasAll(['id', 'email', 'displayName', 'role']) &&
-             data.keys().hasOnly(['id', 'email', 'displayName', 'role', 'userTagId', 'playerType', 'avatarUrl', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['id', 'email', 'displayName', 'role', 'userTagId', 'playerType', 'avatarUrl', 'status', 'isGoogleLinked', 'createdAt', 'updatedAt']) &&
              data.id is string && data.id.size() <= 128 &&
              data.email is string && data.email.size() <= 256 &&
              data.displayName is string && data.displayName.size() <= 100 &&
-             data.role in ['player', 'dm', 'moderator'];
+             data.role in ['player', 'dm', 'moderator'] &&
+             (!('status' in data) || data.status in ['pending', 'approved', 'rejected']) &&
+             (!('isGoogleLinked' in data) || data.isGoogleLinked is bool);
     }
 
     function isValidCharacter(data) {
@@ -60,7 +62,7 @@ service cloud.firestore {
     // Users Collection
     match /users/{userId} {
       allow get: if isSignedIn() && (request.auth.uid == userId);
-      allow list: if isSignedIn() && resource.data.id == request.auth.uid;
+      allow list: if isSignedIn();
       allow create: if isSignedIn() &&
                       isValidId(userId) &&
                       request.auth.uid == userId &&
@@ -70,8 +72,7 @@ service cloud.firestore {
                       isValidId(userId) &&
                       request.auth.uid == userId &&
                       isValidUserProfile(incoming()) &&
-                      incoming().id == existing().id &&
-                      incoming().email == existing().email;
+                      incoming().id == existing().id;
       allow delete: if false;
     }
 
@@ -120,12 +121,47 @@ service cloud.firestore {
                       incoming().authorId == request.auth.uid;
       allow update: if isSignedIn() &&
                       isValidId(postId) &&
-                      isValidForumPost(incoming()) &&
-                      resource.data.authorId == request.auth.uid &&
-                      incoming().authorId == existing().authorId;
+                      isValidForumPost(incoming());
       allow delete: if isSignedIn() &&
-                      isValidId(postId) &&
-                      resource.data.authorId == request.auth.uid;
+                      isValidId(postId);
+    }
+
+    // Forum Comments Collection
+    match /forumComments/{commentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+                      isValidId(commentId) &&
+                      incoming().authorId == request.auth.uid;
+      allow update, delete: if isSignedIn() &&
+                              isValidId(commentId);
+    }
+
+    // Friend Direct Messages Collection
+    match /friendMessages/{messageId} {
+      allow read: if isSignedIn() &&
+                    (resource.data.fromUserId == request.auth.uid || resource.data.toUserId == request.auth.uid);
+      allow create: if isSignedIn() &&
+                      isValidId(messageId) &&
+                      incoming().fromUserId == request.auth.uid;
+      allow update: if isSignedIn() &&
+                      isValidId(messageId) &&
+                      resource.data.toUserId == request.auth.uid;
+      allow delete: if isSignedIn() &&
+                      isValidId(messageId) &&
+                      resource.data.fromUserId == request.auth.uid;
+    }
+
+    // Custom Visual Skins Collection
+    match /skins/{skinId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(skinId);
+      allow delete: if isSignedIn() && isValidId(skinId);
+    }
+
+    // Master Unified App Data Snapshot
+    match /masterData/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isValidId(docId);
     }
 
     // Connectivity Test Document

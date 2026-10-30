@@ -240,6 +240,7 @@ export interface AuthSessionUser {
   canPostInForum?: boolean;
   forumPermissionsRequested?: boolean;
   status: 'pending' | 'approved' | 'rejected';
+  isGoogleLinked?: boolean;
 }
 
 export function loadAuthUser(): AuthSessionUser | null {
@@ -593,6 +594,20 @@ export {
   loadDMWorkspaceAsync,
   subscribeToDMWorkspace,
   saveUserProfileAsync,
+  loadUserProfileAsync,
+  saveSkinsAsync,
+  loadSkinsAsync,
+  subscribeToSkins,
+  saveForumPostsAsync,
+  loadForumPostsAsync,
+  subscribeToForumPosts,
+  saveForumCommentsAsync,
+  loadForumCommentsAsync,
+  saveFriendMessagesAsync,
+  loadFriendMessagesAsync,
+  subscribeToFriendMessages,
+  saveMasterDataSnapshotAsync,
+  loadMasterDataSnapshotAsync,
   saveHostSettingsAsync,
   loadHostSettingsAsync,
 } from '../services/firebaseService';

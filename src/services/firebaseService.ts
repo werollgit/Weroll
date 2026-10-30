@@ -22,6 +22,10 @@ import type {
   DMWorkspace,
   HostSettings,
   WorldSheetSummary,
+  AppSkinRecord,
+  ForumPost,
+  ForumComment,
+  FriendDirectMessage,
 } from '../types/dnd';
 import {
   loadCharacters as loadCharactersLocal,
@@ -371,6 +375,8 @@ export interface FirestoreUserDoc {
   playerType?: 'player' | 'dm' | 'both';
   userTagId?: string;
   avatarUrl?: string;
+  status?: 'pending' | 'approved' | 'rejected';
+  isGoogleLinked?: boolean;
   createdAt?: string;
   updatedAt: string;
 }
@@ -402,6 +408,8 @@ export async function saveUserProfileAsync(user: AuthSessionUser): Promise<void>
       playerType: user.playerType || 'player',
       userTagId: (user.userTagId || '123').slice(0, 10),
       avatarUrl: (user.avatarUrl || '').slice(0, 2048),
+      status: user.status || 'approved',
+      isGoogleLinked: Boolean(user.isGoogleLinked),
       updatedAt: new Date().toISOString(),
     };
 
@@ -412,8 +420,468 @@ export async function saveUserProfileAsync(user: AuthSessionUser): Promise<void>
   }
 }
 
+/**
+ * Carga el perfil del usuario desde Firestore si está disponible.
+ */
+export async function loadUserProfileAsync(userId: string): Promise<FirestoreUserDoc | null> {
+  if (!isFirebaseAvailable() || !userId) return null;
+  try {
+    const docRef = doc(db, 'users', userId);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return snap.data() as FirestoreUserDoc;
+    }
+    return null;
+  } catch (error) {
+    console.warn('[FirebaseService] Error cargando perfil de usuario en Firestore:', error);
+    return null;
+  }
+}
+
 // ==========================================
-// 4. SERVICIO DE AJUSTES DEL SERVIDOR / HOST
+// 4. SERVICIO DE SKINS VISUALES (SKINS)
+// ==========================================
+
+export interface FirestoreSkinDoc {
+  id: string;
+  name: string;
+  target?: string;
+  scope?: string;
+  authorId?: string;
+  authorName?: string;
+  data: string; // JSON serializado de AppSkinRecord
+  createdAt?: string;
+  updatedAt: string;
+}
+
+/**
+ * Guarda una lista de skins en Firestore y en caché.
+ */
+export async function saveSkinsAsync(
+  skins: AppSkinRecord[],
+  currentUser?: AuthSessionUser | null
+): Promise<void> {
+  if (!isFirebaseAvailable()) return;
+
+  try {
+    const promises = skins.map(async (skin) => {
+      const skinDocData: FirestoreSkinDoc = {
+        id: skin.id,
+        name: (skin.name || 'Skin Personalizada').slice(0, 100),
+        target: skin.target || skin.scope || 'player',
+        scope: skin.scope || skin.target || 'player',
+        authorId: currentUser?.id || skin.authorEmail || 'system',
+        authorName: skin.authorName || currentUser?.displayName || 'Creador',
+        data: JSON.stringify(skin),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const docRef = doc(db, 'skins', skin.id);
+      await setDoc(docRef, skinDocData, { merge: true });
+    });
+
+    await Promise.all(promises);
+  } catch (error) {
+    console.warn('[FirebaseService] Sincronización de skins en Firestore diferida:', error);
+  }
+}
+
+/**
+ * Carga skins desde Firestore.
+ */
+export async function loadSkinsAsync(
+  currentUser?: AuthSessionUser | null
+): Promise<AppSkinRecord[]> {
+  if (!isFirebaseAvailable()) return [];
+
+  try {
+    const snapshot = await getDocs(collection(db, 'skins'));
+    const loadedSkins: AppSkinRecord[] = [];
+    snapshot.forEach((snap) => {
+      const raw = snap.data() as FirestoreSkinDoc;
+      if (raw.data) {
+        try {
+          loadedSkins.push(JSON.parse(raw.data));
+        } catch {}
+      }
+    });
+    return loadedSkins;
+  } catch (error) {
+    console.warn('[FirebaseService] Error leyendo skins de Firestore:', error);
+    return [];
+  }
+}
+
+/**
+ * Escucha cambios en tiempo real en las skins de Firestore.
+ */
+export function subscribeToSkins(
+  onUpdate: (skins: AppSkinRecord[]) => void,
+  currentUser?: AuthSessionUser | null
+): Unsubscribe {
+  if (!isFirebaseAvailable()) return () => {};
+
+  return onSnapshot(
+    collection(db, 'skins'),
+    (snapshot) => {
+      const skins: AppSkinRecord[] = [];
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data() as FirestoreSkinDoc;
+        if (d.data) {
+          try {
+            skins.push(JSON.parse(d.data));
+          } catch {}
+        }
+      });
+      if (skins.length > 0) {
+        onUpdate(skins);
+      }
+    },
+    (err) => {
+      console.warn('[FirebaseService] Listener de skins cerrado:', err.message);
+    }
+  );
+}
+
+// ==========================================
+// 5. SERVICIO DEL FORO WEROLL (POSTS & COMENTARIOS)
+// ==========================================
+
+export interface FirestoreForumPostDoc {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorEmail: string;
+  title: string;
+  content: string;
+  category: string;
+  flair?: string;
+  upvotes: number;
+  commentsCount: number;
+  pinned?: boolean;
+  data: string; // JSON serializado de ForumPost
+  createdAt?: string;
+  updatedAt: string;
+}
+
+/**
+ * Guarda publicaciones del foro en Firestore.
+ */
+export async function saveForumPostsAsync(posts: ForumPost[]): Promise<void> {
+  if (!isFirebaseAvailable()) return;
+
+  try {
+    const promises = posts.map(async (p) => {
+      const postDoc: FirestoreForumPostDoc = {
+        id: p.id,
+        authorId: p.authorEmail || 'anon',
+        authorName: (p.authorName || 'Aventurero').slice(0, 100),
+        authorEmail: p.authorEmail || '',
+        title: (p.title || 'Publicación').slice(0, 200),
+        content: (p.content || '').slice(0, 10000),
+        category: p.category || 'general',
+        flair: p.flair,
+        upvotes: p.upvotes || 0,
+        commentsCount: p.commentsCount || 0,
+        pinned: Boolean(p.pinned),
+        data: JSON.stringify(p),
+        updatedAt: new Date().toISOString(),
+      };
+      const docRef = doc(db, 'forumPosts', p.id);
+      await setDoc(docRef, postDoc, { merge: true });
+    });
+
+    await Promise.all(promises);
+  } catch (error) {
+    console.warn('[FirebaseService] Error guardando foro en Firestore:', error);
+  }
+}
+
+/**
+ * Carga publicaciones del foro desde Firestore.
+ */
+export async function loadForumPostsAsync(): Promise<ForumPost[]> {
+  if (!isFirebaseAvailable()) return [];
+
+  try {
+    const snap = await getDocs(collection(db, 'forumPosts'));
+    const posts: ForumPost[] = [];
+    snap.forEach((docSnap) => {
+      const raw = docSnap.data() as FirestoreForumPostDoc;
+      if (raw.data) {
+        try {
+          posts.push(JSON.parse(raw.data));
+        } catch {}
+      }
+    });
+    return posts;
+  } catch (error) {
+    console.warn('[FirebaseService] Error leyendo posts del foro en Firestore:', error);
+    return [];
+  }
+}
+
+/**
+ * Escucha cambios en tiempo real en los posts del foro.
+ */
+export function subscribeToForumPosts(onUpdate: (posts: ForumPost[]) => void): Unsubscribe {
+  if (!isFirebaseAvailable()) return () => {};
+
+  return onSnapshot(
+    collection(db, 'forumPosts'),
+    (snap) => {
+      const posts: ForumPost[] = [];
+      snap.forEach((docSnap) => {
+        const d = docSnap.data() as FirestoreForumPostDoc;
+        if (d.data) {
+          try {
+            posts.push(JSON.parse(d.data));
+          } catch {}
+        }
+      });
+      if (posts.length > 0) {
+        onUpdate(posts);
+      }
+    },
+    (err) => {
+      console.warn('[FirebaseService] Listener de foro cerrado:', err.message);
+    }
+  );
+}
+
+/**
+ * Guarda comentarios de foro en Firestore.
+ */
+export async function saveForumCommentsAsync(comments: ForumComment[]): Promise<void> {
+  if (!isFirebaseAvailable()) return;
+
+  try {
+    const promises = comments.map(async (c) => {
+      const docRef = doc(db, 'forumComments', c.id);
+      await setDoc(
+        docRef,
+        {
+          id: c.id,
+          postId: c.postId,
+          authorId: c.authorEmail || 'anon',
+          authorName: (c.authorName || 'Aventurero').slice(0, 100),
+          authorEmail: c.authorEmail || '',
+          content: (c.content || '').slice(0, 3000),
+          upvotes: c.upvotes || 0,
+          createdAt: new Date(c.createdAt || Date.now()).toISOString(),
+        },
+        { merge: true }
+      );
+    });
+    await Promise.all(promises);
+  } catch (error) {
+    console.warn('[FirebaseService] Error guardando comentarios en Firestore:', error);
+  }
+}
+
+/**
+ * Carga comentarios de foro desde Firestore.
+ */
+export async function loadForumCommentsAsync(postId?: string): Promise<ForumComment[]> {
+  if (!isFirebaseAvailable()) return [];
+
+  try {
+    const q = postId
+      ? query(collection(db, 'forumComments'), where('postId', '==', postId))
+      : collection(db, 'forumComments');
+    const snap = await getDocs(q);
+    const comments: ForumComment[] = [];
+    snap.forEach((docSnap) => {
+      const raw = docSnap.data();
+      comments.push({
+        id: raw.id || docSnap.id,
+        postId: raw.postId,
+        authorEmail: raw.authorEmail || '',
+        authorName: raw.authorName || 'Aventurero',
+        authorTagId: raw.authorTagId || '123',
+        authorFullTag: `${raw.authorName || 'Aventurero'}@${raw.authorTagId || '123'}`,
+        authorPlayerType: raw.authorPlayerType || 'player',
+        authorAppRole: raw.authorAppRole || 'client',
+        content: raw.content || '',
+        createdAt: raw.createdAt ? new Date(raw.createdAt).getTime() : Date.now(),
+        upvotes: raw.upvotes || 0,
+        upvoters: raw.upvoters || [],
+      });
+    });
+    return comments;
+  } catch (error) {
+    console.warn('[FirebaseService] Error leyendo comentarios de Firestore:', error);
+    return [];
+  }
+}
+
+// ==========================================
+// 6. SERVICIO DE MENSAJERÍA DIRECTA DE AMIGOS
+// ==========================================
+
+export async function saveFriendMessagesAsync(
+  messages: FriendDirectMessage[],
+  currentUser?: AuthSessionUser | null
+): Promise<void> {
+  if (!isFirebaseAvailable()) return;
+
+  try {
+    const promises = messages.map(async (m) => {
+      const docRef = doc(db, 'friendMessages', m.id);
+      await setDoc(
+        docRef,
+        {
+          id: m.id,
+          fromUserId: m.fromUserId,
+          fromDisplayName: (m.fromDisplayName || 'Amigo').slice(0, 100),
+          toUserId: m.toUserId,
+          toDisplayName: (m.toDisplayName || 'Amigo').slice(0, 100),
+          content: (m.content || '').slice(0, 2000),
+          read: Boolean(m.read),
+          createdAt: new Date(m.createdAt || Date.now()).toISOString(),
+        },
+        { merge: true }
+      );
+    });
+    await Promise.all(promises);
+  } catch (error) {
+    console.warn('[FirebaseService] Error guardando mensajes directos en Firestore:', error);
+  }
+}
+
+export async function loadFriendMessagesAsync(
+  currentUser?: AuthSessionUser | null
+): Promise<FriendDirectMessage[]> {
+  if (!isFirebaseAvailable()) return [];
+
+  const uid = auth?.currentUser?.uid || currentUser?.id;
+  if (!uid) return [];
+
+  try {
+    // Read messages where user is sender or receiver
+    const qFrom = query(collection(db, 'friendMessages'), where('fromUserId', '==', uid));
+    const qTo = query(collection(db, 'friendMessages'), where('toUserId', '==', uid));
+
+    const [snapFrom, snapTo] = await Promise.all([getDocs(qFrom), getDocs(qTo)]);
+    const map = new Map<string, FriendDirectMessage>();
+
+    const parseMsg = (docSnap: any) => {
+      const raw = docSnap.data();
+      return {
+        id: raw.id || docSnap.id,
+        fromUserId: raw.fromUserId,
+        fromDisplayName: raw.fromDisplayName || 'Amigo',
+        fromUserTagId: raw.fromUserTagId || '123',
+        fromFullTag: `${raw.fromDisplayName || 'Amigo'}@${raw.fromUserTagId || '123'}`,
+        fromEmail: raw.fromEmail || '',
+        toUserId: raw.toUserId,
+        toDisplayName: raw.toDisplayName || 'Amigo',
+        toUserTagId: raw.toUserTagId || '123',
+        toFullTag: `${raw.toDisplayName || 'Amigo'}@${raw.toUserTagId || '123'}`,
+        toEmail: raw.toEmail || '',
+        content: raw.content || '',
+        createdAt: raw.createdAt ? new Date(raw.createdAt).getTime() : Date.now(),
+        read: Boolean(raw.read),
+      };
+    };
+
+    snapFrom.forEach((d) => map.set(d.id, parseMsg(d)));
+    snapTo.forEach((d) => map.set(d.id, parseMsg(d)));
+
+    return Array.from(map.values()).sort((a, b) => a.createdAt - b.createdAt);
+  } catch (error) {
+    console.warn('[FirebaseService] Error leyendo mensajes de Firestore:', error);
+    return [];
+  }
+}
+
+export function subscribeToFriendMessages(
+  onUpdate: (messages: FriendDirectMessage[]) => void,
+  currentUser?: AuthSessionUser | null
+): Unsubscribe {
+  if (!isFirebaseAvailable()) return () => {};
+
+  const uid = auth?.currentUser?.uid || currentUser?.id;
+  if (!uid) return () => {};
+
+  const qTo = query(collection(db, 'friendMessages'), where('toUserId', '==', uid));
+
+  return onSnapshot(
+    qTo,
+    (snap) => {
+      const msgs: FriendDirectMessage[] = [];
+      snap.forEach((docSnap) => {
+        const raw = docSnap.data();
+        msgs.push({
+          id: raw.id || docSnap.id,
+          fromUserId: raw.fromUserId,
+          fromDisplayName: raw.fromDisplayName || 'Amigo',
+          fromUserTagId: raw.fromUserTagId || '123',
+          fromFullTag: `${raw.fromDisplayName || 'Amigo'}@${raw.fromUserTagId || '123'}`,
+          fromEmail: raw.fromEmail || '',
+          toUserId: raw.toUserId,
+          toDisplayName: raw.toDisplayName || 'Amigo',
+          toUserTagId: raw.toUserTagId || '123',
+          toFullTag: `${raw.toDisplayName || 'Amigo'}@${raw.toUserTagId || '123'}`,
+          toEmail: raw.toEmail || '',
+          content: raw.content || '',
+          createdAt: raw.createdAt ? new Date(raw.createdAt).getTime() : Date.now(),
+          read: Boolean(raw.read),
+        });
+      });
+      if (msgs.length > 0) {
+        onUpdate(msgs);
+      }
+    },
+    (err) => {
+      console.warn('[FirebaseService] Listener de mensajes de amigos cerrado:', err.message);
+    }
+  );
+}
+
+// ==========================================
+// 7. SERVICIO DE RESPALDO MAESTRO UNIFICADO (MASTER DATA)
+// ==========================================
+
+export async function saveMasterDataSnapshotAsync(snapshotPayload: any): Promise<void> {
+  if (!isFirebaseAvailable()) return;
+
+  try {
+    const docRef = doc(db, 'masterData', 'global');
+    const docData = {
+      id: 'global',
+      version: '2.0',
+      exportDate: new Date().toISOString(),
+      data: JSON.stringify(snapshotPayload),
+      updatedAt: new Date().toISOString(),
+    };
+    await setDoc(docRef, docData, { merge: true });
+  } catch (error) {
+    console.warn('[FirebaseService] Error guardando snapshot maestro en Firestore:', error);
+  }
+}
+
+export async function loadMasterDataSnapshotAsync(): Promise<any | null> {
+  if (!isFirebaseAvailable()) return null;
+
+  try {
+    const docRef = doc(db, 'masterData', 'global');
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const raw = snap.data();
+      if (raw.data) {
+        return JSON.parse(raw.data);
+      }
+    }
+    return null;
+  } catch (error) {
+    console.warn('[FirebaseService] Error cargando snapshot maestro de Firestore:', error);
+    return null;
+  }
+}
+
+// ==========================================
+// 8. SERVICIO DE AJUSTES DEL SERVIDOR / HOST
 // ==========================================
 
 export async function saveHostSettingsAsync(settings: HostSettings): Promise<void> {
@@ -423,3 +891,4 @@ export async function saveHostSettingsAsync(settings: HostSettings): Promise<voi
 export async function loadHostSettingsAsync(): Promise<HostSettings> {
   return loadHostSettingsLocal();
 }
+

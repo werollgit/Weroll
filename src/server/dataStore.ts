@@ -65,6 +65,8 @@ export interface UserAccount {
   canPostInForum?: boolean; // false for regular clients unless granted by mod/admin
   forumPermissionsRequested?: boolean;
   status: 'pending' | 'approved' | 'rejected';
+  isGoogleLinked?: boolean;
+  googleUid?: string;
   registeredAt: number;
   approvedAt?: number;
   approvedBy?: string;

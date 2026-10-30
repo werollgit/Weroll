@@ -12,6 +12,8 @@
         "role": { "type": "string", "enum": ["player", "dm", "moderator"] },
         "playerType": { "type": "string", "enum": ["player", "dm", "both"] },
         "avatarUrl": { "type": "string", "maxLength": 2048 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "isGoogleLinked": { "type": "boolean" },
         "createdAt": { "type": "string", "maxLength": 64 },
         "updatedAt": { "type": "string", "maxLength": 64 }
       },
@@ -30,6 +32,7 @@
         "level": { "type": "integer" },
         "currentHp": { "type": "integer" },
         "maxHp": { "type": "integer" },
+        "data": { "type": "string", "maxLength": 500000 },
         "createdAt": { "type": "string", "maxLength": 64 },
         "updatedAt": { "type": "string", "maxLength": 64 }
       },
@@ -44,6 +47,7 @@
         "dmUserId": { "type": "string", "maxLength": 128 },
         "title": { "type": "string", "maxLength": 150 },
         "description": { "type": "string", "maxLength": 4000 },
+        "data": { "type": "string", "maxLength": 800000 },
         "createdAt": { "type": "string", "maxLength": 64 },
         "updatedAt": { "type": "string", "maxLength": 64 }
       },
@@ -57,13 +61,81 @@
         "id": { "type": "string", "maxLength": 128 },
         "authorId": { "type": "string", "maxLength": 128 },
         "authorName": { "type": "string", "maxLength": 100 },
+        "authorEmail": { "type": "string", "maxLength": 256 },
         "title": { "type": "string", "maxLength": 200 },
         "content": { "type": "string", "maxLength": 10000 },
         "category": { "type": "string", "maxLength": 50 },
+        "flair": { "type": "string", "maxLength": 50 },
+        "upvotes": { "type": "integer" },
+        "commentsCount": { "type": "integer" },
+        "pinned": { "type": "boolean" },
+        "data": { "type": "string", "maxLength": 500000 },
         "createdAt": { "type": "string", "maxLength": 64 },
         "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "authorId", "title", "content"]
+    },
+    "ForumComment": {
+      "title": "ForumComment",
+      "description": "Comment on a community forum thread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "postId": { "type": "string", "maxLength": 128 },
+        "authorId": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "maxLength": 100 },
+        "authorEmail": { "type": "string", "maxLength": 256 },
+        "content": { "type": "string", "maxLength": 3000 },
+        "upvotes": { "type": "integer" },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "postId", "authorId", "content"]
+    },
+    "FriendMessage": {
+      "title": "FriendMessage",
+      "description": "Direct message between friends",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "fromUserId": { "type": "string", "maxLength": 128 },
+        "fromDisplayName": { "type": "string", "maxLength": 100 },
+        "toUserId": { "type": "string", "maxLength": 128 },
+        "toDisplayName": { "type": "string", "maxLength": 100 },
+        "content": { "type": "string", "maxLength": 2000 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "fromUserId", "toUserId", "content"]
+    },
+    "Skin": {
+      "title": "Skin",
+      "description": "Custom visual skin designed in the skin creator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "target": { "type": "string", "maxLength": 50 },
+        "scope": { "type": "string", "maxLength": 50 },
+        "authorId": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "maxLength": 100 },
+        "data": { "type": "string", "maxLength": 500000 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "name"]
+    },
+    "MasterData": {
+      "title": "MasterData",
+      "description": "Master snapshot of WeRoll 5E unified database for instant recovery",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "version": { "type": "string", "maxLength": 50 },
+        "exportDate": { "type": "string", "maxLength": 64 },
+        "data": { "type": "string", "maxLength": 1000000 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "version"]
     },
     "ConnectionTest": {
       "title": "ConnectionTest",
@@ -90,6 +162,22 @@
     "/forumPosts/{postId}": {
       "schema": "ForumPost",
       "description": "Community forum discussion posts"
+    },
+    "/forumComments/{commentId}": {
+      "schema": "ForumComment",
+      "description": "Community forum thread comments"
+    },
+    "/friendMessages/{messageId}": {
+      "schema": "FriendMessage",
+      "description": "Direct messages between friend accounts"
+    },
+    "/skins/{skinId}": {
+      "schema": "Skin",
+      "description": "Custom visual theme skins created by users and creators"
+    },
+    "/masterData/{docId}": {
+      "schema": "MasterData",
+      "description": "Master global snapshot for zero-delay boot recovery"
     },
     "/test/{testId}": {
       "schema": "ConnectionTest",

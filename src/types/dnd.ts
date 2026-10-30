@@ -764,6 +764,7 @@ export interface UserAccountPublic {
   canPostInForum: boolean;
   forumPermissionsRequested?: boolean;
   status: 'pending' | 'approved' | 'rejected';
+  isGoogleLinked?: boolean;
   registeredAt: number;
   approvedAt?: number;
   approvedBy?: string;

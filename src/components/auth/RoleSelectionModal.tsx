@@ -21,6 +21,7 @@ export interface AuthSessionUser {
   canPostInForum?: boolean;
   forumPermissionsRequested?: boolean;
   status: 'pending' | 'approved' | 'rejected';
+  isGoogleLinked?: boolean;
 }
 
 interface RoleSelectionModalProps {
@@ -43,8 +44,19 @@ export const RoleSelectionModal: React.FC<RoleSelectionModalProps> = ({
   onSelectRole,
 }) => {
   // Default mode is directly 'login' as requested
-  const [authMode, setAuthMode] = useState<'login' | 'register' | 'adminPassword' | 'forgotPassword'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'adminPassword' | 'forgotPassword' | 'google-onboard'>('login');
   const [selectedRole, setSelectedRole] = useState<UserRole>('moderator');
+
+  // Google Onboarding state for new Google users
+  const [googleOnboardData, setGoogleOnboardData] = useState<{
+    uid: string;
+    email: string;
+    displayName: string;
+    photoURL?: string;
+  } | null>(null);
+  const [googleDisplayName, setGoogleDisplayName] = useState<string>('');
+  const [googleTagId, setGoogleTagId] = useState<string>('123');
+  const [googlePlayerType, setGooglePlayerType] = useState<PlayerType>('player');
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState<string>('');
@@ -77,6 +89,8 @@ export const RoleSelectionModal: React.FC<RoleSelectionModalProps> = ({
 
   const handleGoogleSignIn = async () => {
     setErrorMessage('');
+    setPendingNotice('');
+    setRejectedNotice(null);
     setIsLoading(true);
     try {
       const userCredential = await signInWithPopup(auth, googleProvider);
@@ -97,6 +111,33 @@ export const RoleSelectionModal: React.FC<RoleSelectionModalProps> = ({
           setErrorMessage(data.error || 'Error al autenticar con Google.');
           return;
         }
+
+        // New Google user requires completing onboarding (Display Name, @ID, and Player Type)
+        if (data.needsOnboarding && data.googleData) {
+          setGoogleOnboardData(data.googleData);
+          setGoogleDisplayName(data.googleData.displayName || '');
+          setGoogleTagId('123');
+          setGooglePlayerType('player');
+          setAuthMode('google-onboard');
+          return;
+        }
+
+        // Existing user in pending status must be blocked
+        if (data.user?.status === 'pending') {
+          setPendingNotice(
+            'Tu cuenta vinculada a Google está en estado PENDIENTE de aprobación por el Administrador. No puedes ingresar hasta que sea aprobada.'
+          );
+          return;
+        }
+
+        if (data.user?.status === 'rejected') {
+          setRejectedNotice({
+            message: 'Tu solicitud de acceso ha sido rechazada por el Administrador.',
+            customMessage: data.customMessage,
+          });
+          return;
+        }
+
         onSelectRole(data.user.role || 'player', data.user);
       }
     } catch (err: any) {
@@ -104,6 +145,47 @@ export const RoleSelectionModal: React.FC<RoleSelectionModalProps> = ({
         return;
       }
       setErrorMessage(err.message || 'Error al autenticar con Google Firebase.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleOnboardSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!googleOnboardData) return;
+    setErrorMessage('');
+    setPendingNotice('');
+    if (!googleDisplayName.trim()) {
+      setErrorMessage('Ingresa un nombre de aventurero para tu cuenta de WeRoll.');
+      return;
+    }
+    const cleanTag = googleTagId.replace(/^@+/, '').trim().slice(0, 3) || '123';
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/google-onboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: googleOnboardData.uid,
+          email: googleOnboardData.email,
+          displayName: googleDisplayName.trim(),
+          userTagId: cleanTag,
+          playerType: googlePlayerType,
+          photoURL: googleOnboardData.photoURL,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMessage(data.error || 'Error al completar el registro con Google.');
+        return;
+      }
+      setPendingNotice(
+        '¡Cuenta registrada con éxito! Tu cuenta vinculada a Google ha sido creada y se encuentra en estado PENDIENTE de aprobación por un moderador o administrador.'
+      );
+      setAuthMode('login');
+      setLoginEmail(googleOnboardData.email);
+    } catch {
+      setErrorMessage('Error al conectar con el servidor.');
     } finally {
       setIsLoading(false);
     }
@@ -322,7 +404,9 @@ export const RoleSelectionModal: React.FC<RoleSelectionModalProps> = ({
             WeRoll
           </h2>
           <p className="text-xs text-stone-400 mt-1 uppercase tracking-widest font-cinzel">
-            {authMode === 'register'
+            {authMode === 'google-onboard'
+              ? 'Completar Registro con Google'
+              : authMode === 'register'
               ? 'Crear Cuenta y Seleccionar Perfil'
               : authMode === 'adminPassword'
               ? 'Acceso con Clave Maestra'
@@ -493,6 +577,131 @@ export const RoleSelectionModal: React.FC<RoleSelectionModalProps> = ({
               >
                 <KeyRound className="w-3 h-3" />
                 Acceso directo con Clave Maestra de Administrador
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* =================================================================== */}
+        {/* GOOGLE ONBOARDING FORM                                              */}
+        {/* =================================================================== */}
+        {authMode === 'google-onboard' && googleOnboardData && (
+          <form onSubmit={handleGoogleOnboardSubmit} className="space-y-4">
+            <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-600/40 text-xs text-amber-200 flex items-center gap-3">
+              <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+              </svg>
+              <div>
+                <strong className="block font-cinzel font-bold text-amber-300">Cuenta de Google detectada</strong>
+                <span>{googleOnboardData.email}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-cinzel font-bold uppercase text-stone-400 mb-1">
+                Nombre de Usuario en WeRoll
+              </label>
+              <input
+                type="text"
+                value={googleDisplayName}
+                onChange={(e) => setGoogleDisplayName(e.target.value)}
+                placeholder="Ej. Valeros del Alba"
+                required
+                className="w-full bg-[#121316] border border-stone-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-stone-100 text-sm outline-none transition"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-cinzel font-bold uppercase text-stone-400 mb-1">
+                Tag Identificador de 3 Caracteres (@ID)
+              </label>
+              <div className="relative flex items-center">
+                <span className="absolute left-3.5 text-amber-400 font-mono font-bold">@</span>
+                <input
+                  type="text"
+                  maxLength={3}
+                  value={googleTagId}
+                  onChange={(e) => setGoogleTagId(e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())}
+                  placeholder="123"
+                  required
+                  className="w-full bg-[#121316] border border-stone-700 focus:border-amber-500 rounded-xl pl-8 pr-3.5 py-2.5 text-stone-100 font-mono font-bold text-sm uppercase outline-none transition"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-cinzel font-bold uppercase text-amber-400 mb-1.5">
+                Tipo de Jugador / Mesa
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGooglePlayerType('player')}
+                  className={`p-2.5 rounded-xl border text-center transition ${
+                    googlePlayerType === 'player'
+                      ? 'bg-amber-950/80 border-amber-500 text-amber-200 shadow-md'
+                      : 'bg-[#121316] border-stone-800 text-stone-400 hover:border-stone-700'
+                  }`}
+                >
+                  <span className="font-cinzel font-bold text-xs block">Jugador</span>
+                  <span className="text-[10px] text-stone-400 block mt-0.5">Participante</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setGooglePlayerType('dm')}
+                  className={`p-2.5 rounded-xl border text-center transition ${
+                    googlePlayerType === 'dm'
+                      ? 'bg-purple-950/80 border-purple-500 text-purple-200 shadow-md'
+                      : 'bg-[#121316] border-stone-800 text-stone-400 hover:border-stone-700'
+                  }`}
+                >
+                  <span className="font-cinzel font-bold text-xs block">DM / Master</span>
+                  <span className="text-[10px] text-stone-400 block mt-0.5">Narrador</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setGooglePlayerType('both')}
+                  className={`p-2.5 rounded-xl border text-center transition ${
+                    googlePlayerType === 'both'
+                      ? 'bg-blue-950/80 border-blue-500 text-blue-200 shadow-md'
+                      : 'bg-[#121316] border-stone-800 text-stone-400 hover:border-stone-700'
+                  }`}
+                >
+                  <span className="font-cinzel font-bold text-xs block">Ambos</span>
+                  <span className="text-[10px] text-stone-400 block mt-0.5">Jugador & DM</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-[#121316] border border-amber-900/50 text-[11px] text-stone-300 leading-relaxed">
+              ℹ️ <strong>Revisión de Seguridad:</strong> Tu cuenta con Google se registrará en estado <strong>Pendiente de Aprobación</strong>. Un moderador o administrador deberá revisar y aprobar tu cuenta antes de acceder al portal.
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white font-cinzel font-bold text-sm shadow-xl transition transform hover:scale-[1.01] disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <UserPlus className="w-4 h-4" />
+              {isLoading ? 'Registrando con Google...' : 'Completar Registro y Solicitar Aprobación'}
+            </button>
+
+            <div className="pt-2 text-center border-t border-stone-800/80">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage('');
+                  setAuthMode('login');
+                }}
+                className="text-xs text-stone-400 hover:text-amber-300 transition flex items-center justify-center gap-1 mx-auto"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Regresar al inicio de sesión
               </button>
             </div>
           </form>
