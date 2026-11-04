@@ -43,6 +43,7 @@ import {
   ListPlus,
   Sliders,
   Crosshair,
+  Palette,
 } from 'lucide-react';
 import { EntityAvatar } from '../common/EntityAvatar';
 import { AvatarCustomizerModal } from '../common/AvatarCustomizerModal';
@@ -65,7 +66,14 @@ import {
   VisualQueueItem,
   DLCPackageRecord,
   ChronicleEntryType,
+  TacticalMapConfig,
+  AppSkinRecord,
 } from '../../types/dnd';
+import {
+  canAccessTacticalMaps,
+  createDefaultTacticalMapConfig,
+} from '../../utils/tacticalMapEngine';
+import { TacticalMapStudioModal } from '../tactical/TacticalMapStudioModal';
 import {
   rollDiceExpression,
   stepInitiativeTurn,
@@ -157,11 +165,15 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
   currentUserEmail = '',
 }) => {
   const isOracleAllowed = canAccessArcaneOracle(currentUserRole);
+  const isTacticalMapsAllowed = canAccessTacticalMaps(currentUserRole);
   const [isFolderManagerOpen, setIsFolderManagerOpen] = useState<boolean>(false);
   const [isDmTableSettingsModalOpen, setIsDmTableSettingsModalOpen] = useState<boolean>(false);
+  const [isTacticalStudioOpen, setIsTacticalStudioOpen] = useState<boolean>(false);
   const [availableDlcs, setAvailableDlcs] = useState<DLCPackageRecord[]>([]);
   const [ownedDlcIds, setOwnedDlcIds] = useState<string[]>(['dlc-srd-5e-oficial']);
   const [dlcRedeemCodeInput, setDlcRedeemCodeInput] = useState<string>('');
+  const [availableDmSkins, setAvailableDmSkins] = useState<AppSkinRecord[]>([]);
+  const [onlineDefaultDmSkinId, setOnlineDefaultDmSkinId] = useState<string>('skin-dm-crimson-overlord');
 
   React.useEffect(() => {
     let active = true;
@@ -174,6 +186,21 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
         if (!active) return;
         if (Array.isArray(data.dlcs)) setAvailableDlcs(data.dlcs);
         if (Array.isArray(data.ownedDlcIds)) setOwnedDlcIds(data.ownedDlcIds);
+        const mergedDmSkins: AppSkinRecord[] = [];
+        if (Array.isArray(data.dmSkins)) {
+          mergedDmSkins.push(...data.dmSkins);
+        }
+        if (Array.isArray(data.skins)) {
+          for (const s of data.skins) {
+            if (s.scope === 'dm' && !mergedDmSkins.some((d) => d.id === s.id)) {
+              mergedDmSkins.push(s);
+            }
+          }
+        }
+        setAvailableDmSkins(mergedDmSkins);
+        if (data.activeOnlineDmSkinId) {
+          setOnlineDefaultDmSkinId(data.activeOnlineDmSkinId);
+        }
       } catch {
         // ignore
       }
@@ -183,6 +210,130 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
       active = false;
     };
   }, [currentUserEmail, isDmTableSettingsModalOpen]);
+
+  const activeDmSkinRecord = useMemo(() => {
+    const targetId = workspace.dmSkinId || onlineDefaultDmSkinId;
+    return (
+      availableDmSkins.find((s) => s.id === targetId) ||
+      availableDmSkins.find((s) => s.id === onlineDefaultDmSkinId) ||
+      null
+    );
+  }, [workspace.dmSkinId, availableDmSkins, onlineDefaultDmSkinId]);
+
+  const activeDmSkinTokens = activeDmSkinRecord?.themeTokens || null;
+
+  const savedTacticalLocations = useMemo(
+    () => (workspace.locations || []).filter((l) => Boolean(l.tacticalConfig)),
+    [workspace.locations]
+  );
+
+  const handleSaveTacticalMap = (
+    tacticalCfg: TacticalMapConfig,
+    existingLocationId?: string
+  ) => {
+    const folderTarget = selectedFolder !== 'all' ? selectedFolder : 'General';
+    const existingLoc = existingLocationId
+      ? (workspace.locations || []).find((l) => l.id === existingLocationId)
+      : (workspace.locations || []).find(
+          (l) => l.tacticalConfig?.id === tacticalCfg.id || l.name === tacticalCfg.name
+        );
+
+    const locId = existingLoc ? existingLoc.id : `loc-tactical-${tacticalCfg.id}`;
+    const updatedLoc: LocationRecord = existingLoc
+      ? {
+          ...existingLoc,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || existingLoc.mapImageUrl,
+          tacticalConfig: tacticalCfg,
+        }
+      : {
+          id: locId,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          region: currentPlaceShortName || 'General',
+          type: 'Mapa Táctico',
+          description: `Mapa táctico (${tacticalCfg.gridCols}x${tacticalCfg.gridRows} - ${
+            tacticalCfg.gridType === 'hex' ? 'Hexagonal' : 'Cuadrada'
+          })`,
+          secretsForDm: '',
+          notes: '',
+          evolution: '',
+          pointsOfInterest: [],
+          folder: folderTarget,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || '',
+          tacticalConfig: tacticalCfg,
+        };
+
+    const nextLocations = existingLoc
+      ? (workspace.locations || []).map((l) => (l.id === existingLoc.id ? updatedLoc : l))
+      : [updatedLoc, ...(workspace.locations || [])];
+
+    onUpdateWorkspace({
+      ...workspace,
+      locations: nextLocations,
+    });
+  };
+
+  const handleProjectTacticalMapLive = (tacticalCfg: TacticalMapConfig) => {
+    const folderTarget = selectedFolder !== 'all' ? selectedFolder : 'General';
+    const existingLoc = (workspace.locations || []).find(
+      (l) => l.tacticalConfig?.id === tacticalCfg.id || l.name === tacticalCfg.name
+    );
+    const locId = existingLoc ? existingLoc.id : `loc-tactical-${tacticalCfg.id}`;
+    const updatedLoc: LocationRecord = existingLoc
+      ? {
+          ...existingLoc,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || existingLoc.mapImageUrl,
+          gridCols: tacticalCfg.gridCols,
+          gridRows: tacticalCfg.gridRows,
+          tacticalConfig: tacticalCfg,
+        }
+      : {
+          id: locId,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          region: currentPlaceShortName || 'General',
+          type: 'Mapa Táctico',
+          description: `Mapa táctico (${tacticalCfg.gridCols}x${tacticalCfg.gridRows} - ${
+            tacticalCfg.gridType === 'hex' ? 'Hexagonal' : 'Cuadrada'
+          })`,
+          secretsForDm: '',
+          notes: '',
+          evolution: '',
+          pointsOfInterest: [],
+          folder: folderTarget,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || '',
+          gridCols: tacticalCfg.gridCols,
+          gridRows: tacticalCfg.gridRows,
+          tacticalConfig: tacticalCfg,
+        };
+    const nextLocations = existingLoc
+      ? (workspace.locations || []).map((l) => (l.id === existingLoc.id ? updatedLoc : l))
+      : [updatedLoc, ...(workspace.locations || [])];
+
+    const liveVisual = {
+      kind: 'tactical' as const,
+      id: `tactical-${tacticalCfg.id}`,
+      title: tacticalCfg.name,
+      imageUrl: tacticalCfg.layers[0]?.bgImageUrl || '',
+      folder: folderTarget,
+      gridCols: tacticalCfg.gridCols,
+      gridRows: tacticalCfg.gridRows,
+      tacticalConfig: tacticalCfg,
+    };
+    onUpdateWorkspace({
+      ...workspace,
+      locations: nextLocations,
+      activeLocationId: locId,
+      dmPreviewVisual: liveVisual,
+      activeLiveVisual: liveVisual,
+    });
+    setLiveMapToast(`🗺️ Mapa Táctico "${tacticalCfg.name}" proyectado en vivo a los jugadores`);
+    setTimeout(() => setLiveMapToast(''), 3000);
+  };
 
   const installedDlcIds = workspace.installedDlcIds || ['dlc-srd-5e-oficial'];
 
@@ -1757,7 +1908,19 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
   }, [activeDeck, filteredNpcs, filteredMonsters, filteredItemsAndSpells, spotlightId]);
 
   return (
-    <div className="max-w-[1650px] mx-auto w-full space-y-2.5 select-none">
+    <div
+      data-testid="dm-screen-root"
+      data-dm-skin-id={activeDmSkinRecord?.id || 'default'}
+      className="max-w-[1650px] mx-auto w-full space-y-2.5 select-none rounded-2xl transition-colors"
+      style={{
+        backgroundColor: activeDmSkinTokens?.dmScreenBgColor || undefined,
+        backgroundImage: activeDmSkinTokens?.dmScreenCustomBgTextureUrl
+          ? `url(${activeDmSkinTokens.dmScreenCustomBgTextureUrl})`
+          : undefined,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }}
+    >
       {/* =================================================================== */}
       {/* MAIN DM DASHBOARD GRID (Left 8 cols: Atlas + Barajas/Trama, Right 4 cols: Sala en Vivo + Bitácora + Resúmenes) */}
       {/* =================================================================== */}
@@ -1767,12 +1930,21 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
         {/* =============================================================== */}
         <div className="lg:col-span-8 flex flex-col gap-2.5 justify-between">
           {/* 1. ATLAS DEL MUNDO (Clean header, 3 top buttons: Álbum, Mapas Tácticos, Mapas, & Bottom Cola de Visuales) */}
-          <div className="relative rounded-2xl bg-[#14161f] border-2 border-[#c8a45c]/70 p-3 shadow-[0_0_30px_rgba(0,0,0,0.85)]">
+          <div
+            className="relative rounded-2xl bg-[#14161f] border-2 border-[#c8a45c]/70 p-3 shadow-[0_0_30px_rgba(0,0,0,0.85)]"
+            style={{
+              backgroundColor: activeDmSkinTokens?.dmAtlasFrameBg || undefined,
+              borderColor: activeDmSkinTokens?.dmScreenBaseBorder || undefined,
+            }}
+          >
             {/* Header & Breadcrumbs */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
               <div className="space-y-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="font-cinzel font-black text-sm sm:text-base text-[#f5e4be] tracking-wider uppercase">
+                  <h2
+                    className="font-cinzel font-black text-sm sm:text-base text-[#f5e4be] tracking-wider uppercase"
+                    style={{ color: activeDmSkinTokens?.dmHeaderTitleColor || undefined }}
+                  >
                     ATLAS DEL MUNDO
                   </h2>
                   <span className="font-cinzel font-bold text-sm sm:text-base text-amber-400">
@@ -1864,19 +2036,32 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
                   <span>Álbum ({filteredAlbumPhotos.length})</span>
                 </button>
 
-                <button
-                  type="button"
-                  data-testid="btn-open-tactical-maps"
-                  disabled
-                  className="px-3 py-1.5 rounded-lg bg-stone-900/80 border border-stone-700 text-stone-400 text-xs font-cinzel font-bold flex items-center gap-1.5 opacity-65 cursor-not-allowed shadow"
-                  title="Los Mapas Tácticos están actualmente en proceso de desarrollo"
-                >
-                  <Layers className="w-3.5 h-3.5 text-stone-500" />
-                  <span>Mapas Tácticos</span>
-                  <span className="px-1.5 py-0.2 rounded bg-amber-950/90 border border-amber-500/60 text-[9px] text-amber-300 uppercase tracking-wider">
-                    En Proceso
-                  </span>
-                </button>
+                {isTacticalMapsAllowed ? (
+                  <button
+                    type="button"
+                    data-testid="btn-open-tactical-maps"
+                    onClick={() => setIsTacticalStudioOpen(true)}
+                    className="px-3 py-1.5 rounded-lg bg-sky-950/85 hover:bg-sky-900 border border-sky-400/75 text-sky-100 text-xs font-cinzel font-bold flex items-center gap-1.5 transition shadow cursor-pointer"
+                    title="Abrir Estudio de Mapas Tácticos (Disponible para Moderadores, Creadores y Admins)"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-sky-300" />
+                    <span>Mapas Tácticos ({savedTacticalLocations.length})</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="btn-open-tactical-maps"
+                    disabled
+                    className="px-3 py-1.5 rounded-lg bg-stone-900/80 border border-stone-700 text-stone-400 text-xs font-cinzel font-bold flex items-center gap-1.5 opacity-65 cursor-not-allowed shadow"
+                    title="Los Mapas Tácticos están actualmente en progreso para cuentas de cliente"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-stone-500" />
+                    <span>Mapas Tácticos</span>
+                    <span className="px-1.5 py-0.2 rounded bg-amber-950/90 border border-amber-500/60 text-[9px] text-amber-300 uppercase tracking-wider">
+                      En Progreso
+                    </span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -6669,6 +6854,58 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
                 </div>
               </div>
 
+              {/* SELECTOR DE SKIN VISUAL DEL DUNGEON MASTER */}
+              <div
+                data-testid="dm-settings-skin-selector-section"
+                className="p-3.5 rounded-xl bg-[#191c28] border border-red-500/40 space-y-2.5"
+              >
+                <div className="text-xs font-cinzel font-bold text-red-300 uppercase flex items-center gap-1.5">
+                  <Palette className="w-4 h-4 text-red-400" />
+                  <span>Skin Visual de la Pantalla del Dungeon Master</span>
+                </div>
+                <p className="text-[11px] text-stone-400">
+                  Elige la skin visual que se aplicará a tu Pantalla del DM, Atlas, Monitor de Combate y Modo Mapa.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {availableDmSkins.map((dmSkin) => {
+                    const isSelected =
+                      (workspace.dmSkinId || onlineDefaultDmSkinId) === dmSkin.id;
+                    return (
+                      <button
+                        key={dmSkin.id}
+                        type="button"
+                        data-testid={`btn-select-dm-skin-${dmSkin.id}`}
+                        onClick={() =>
+                          onUpdateWorkspace({
+                            ...workspace,
+                            dmSkinId: dmSkin.id,
+                          })
+                        }
+                        className={`p-2.5 rounded-xl border text-left transition flex items-center justify-between gap-2 cursor-pointer ${
+                          isSelected
+                            ? 'bg-red-950/50 border-red-400 text-white shadow'
+                            : 'bg-[#12141c] border-stone-800 text-stone-300 hover:border-stone-600'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="font-cinzel font-bold text-xs truncate">
+                            {dmSkin.name}
+                          </div>
+                          <div className="text-[10px] text-stone-400 truncate">
+                            {dmSkin.description || 'Tema de Dungeon Master'}
+                          </div>
+                        </div>
+                        {isSelected && (
+                          <span className="px-2 py-0.5 rounded bg-red-600 text-white text-[9px] font-bold shrink-0">
+                            Activa
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* APARTADO DE DLCs E INYECCIÓN DE CONTENIDO (SRD 5E & EXPANSIONES) */}
               <div
                 data-testid="dm-settings-dlc-section"
@@ -6834,6 +7071,82 @@ export const DMScreenView: React.FC<DMScreenViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* TACTICAL MAP STUDIO MODAL (Moderator / Creator / Admin) */}
+      {isTacticalStudioOpen && (
+        <TacticalMapStudioModal
+          isOpen={isTacticalStudioOpen}
+          onClose={() => setIsTacticalStudioOpen(false)}
+          initialConfig={
+            workspace.activeLiveVisual?.tacticalConfig ||
+            workspace.dmPreviewVisual?.tacticalConfig ||
+            savedTacticalLocations[0]?.tacticalConfig ||
+            createDefaultTacticalMapConfig(
+              selectedFolder !== 'all'
+                ? `Mapa Táctico - ${currentPlaceShortName}`
+                : 'Mapa Táctico - Taberna en Duelo'
+            )
+          }
+          savedTacticalLocations={savedTacticalLocations}
+          partyCharacters={partyMembers.map((pm) => ({
+            id: pm.characterId,
+            name: pm.characterName,
+            race: pm.race || 'Humano',
+            characterClass: (pm.characterClass as any) || 'Guerrero',
+            subclass: '',
+            level: pm.level || 1,
+            xp: 0,
+            background: '',
+            alignment: pm.alignment || 'Neutral Bueno',
+            playerName: pm.playerName || 'Jugador',
+            avatarUrl: pm.avatarUrl,
+            playerSkinId: pm.playerSkinId,
+            ac: pm.ac || 15,
+            hpCurrent: pm.hpCurrent ?? 20,
+            hpMax: pm.hpMax ?? 20,
+            hpTemp: 0,
+            speed: 30,
+            initiativeBonus: 0,
+            proficiencyBonus: 2,
+            inspiration: false,
+            hitDiceTotal: '1d10',
+            hitDiceRemaining: 1,
+            deathSaves: { successes: 0, failures: 0 },
+            exhaustion: 0,
+            conditions: pm.conditions || [],
+            concentration: '',
+            abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+            savingThrows: {
+              str: false,
+              dex: false,
+              con: false,
+              int: false,
+              wis: false,
+              cha: false,
+            },
+            skills: {} as any,
+            attacks: [],
+            spellcastingAbility: 'int',
+            spellSaveDC: 10,
+            spellAttackBonus: 2,
+            spellSlots: {},
+            spells: [],
+            inventory: [],
+            coins: { cp: 0, sp: 0, ep: 0, gp: pm.gp ?? 50, pp: 0 },
+            featuresTraits: '',
+            proficienciesLanguages: '',
+            personalityTraits: '',
+            ideals: '',
+            bonds: '',
+            flaws: '',
+            backstory: '',
+            notes: '',
+          }))}
+          monsters={workspace.monsters || []}
+          onSaveTacticalMap={handleSaveTacticalMap}
+          onProjectLiveToPlayers={handleProjectTacticalMapLive}
+        />
       )}
     </div>
   );

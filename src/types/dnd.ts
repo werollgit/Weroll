@@ -328,17 +328,104 @@ export interface MonsterRecord {
   dlcSourceId?: string;
 }
 
+export type TacticalLayerId = 0 | 1 | 2 | 3;
+export type TacticalGridType = 'square' | 'hex';
+export type TacticalTokenSizeMode = 'normal' | 'large' | 'normal_1x1' | 'super_2x2';
+
+export interface TacticalPropStamp {
+  id: string;
+  name?: string;
+  label?: string;
+  imageUrl: string;
+  layerId?: 1 | 2 | 3;
+  col: number;
+  row: number;
+  spanCols: number;
+  spanRows: number;
+  rotationDeg?: number;
+  rotation?: number;
+  opacity?: number;
+  intangible?: boolean;
+}
+
+export interface TacticalLayerData {
+  id: TacticalLayerId;
+  name: string;
+  subtitle?: string;
+  visible: boolean;
+  locked: boolean;
+  bgImageUrl?: string; // Used primarily on Layer 0 (Fondo / Mapa base)
+  bgOpacity?: number;
+  paintedCells: Record<string, string>; // key "col,row" -> hex/rgba color
+  blockedCells: Record<string, boolean> | string[]; // key "col,row" -> red inaccessible cell on this layer
+  stairBridgeCells: Record<string, boolean> | string[]; // key "col,row" -> bridge/stairs accessible across layers
+  voidCells: Record<string, boolean> | string[]; // key "col,row" -> black/invisible outer silhouette mask
+  props: TacticalPropStamp[];
+}
+
+export interface TacticalFowModule {
+  id: string;
+  name: string;
+  color?: string;
+  cells: Record<string, boolean> | string[]; // key "col,row"
+  revealed: boolean;
+}
+
+export interface TacticalFowConfig {
+  generalEnabled: boolean;
+  blinded: boolean;
+  explorationFogEnabled: boolean;
+  playerVisionEnabled: boolean;
+  playerVisionRangeCells: number;
+  defaultVisionCells?: number;
+  ignoreWalls: boolean;
+  revealedCells: Record<string, boolean> | string[];
+  modules: TacticalFowModule[];
+}
+
+export interface TacticalMapConfig {
+  id?: string;
+  name?: string;
+  gridType: TacticalGridType;
+  gridCols: number;
+  gridRows: number;
+  tokenSizeMode: TacticalTokenSizeMode;
+  activeLayerId: TacticalLayerId;
+  layers: Record<TacticalLayerId, TacticalLayerData>;
+  fow: TacticalFowConfig;
+  tokens: TacticalMapToken[];
+  updatedAt?: number;
+}
+
 export interface TacticalMapToken {
   id: string;
-  label: string;
-  kind: 'player' | 'monster' | 'npc' | 'enemy';
+  label?: string;
+  name?: string;
+  kind?: 'player' | 'monster' | 'npc' | 'enemy';
+  tokenType?: 'player' | 'enemy';
+  characterId?: string;
+  monsterId?: string;
   x?: number; // grid column (0-indexed)
   y?: number; // grid row (0-indexed)
-  col?: number; // grid column alias
-  row?: number; // grid row alias
+  col?: number; // grid column
+  row?: number; // grid row
+  layerId?: TacticalLayerId;
+  inStairBridge?: boolean;
+  sizeMode?: TacticalTokenSizeMode;
+  visionBonusCells?: number;
   color?: string;
   avatarUrl?: string;
+  imageUrl?: string;
   linkedId?: string;
+  hp?: number;
+  maxHp?: number;
+  hpCurrent?: number;
+  hpMax?: number;
+  ac?: number;
+  alignment?: string;
+  goldGp?: number;
+  playerSkinId?: string;
+  skinTokens?: AppSkinThemeTokens;
 }
 
 export interface ZoneMapRecord {
@@ -383,6 +470,7 @@ export interface LocationRecord {
   blockedCells?: string[];
   tacticalTokens?: TacticalMapToken[];
   tokens?: TacticalMapToken[];
+  tacticalConfig?: TacticalMapConfig;
   suggestedMonsters?: string[];
   suggestedNpcs?: string[];
   suggestedItems?: string[];
@@ -579,6 +667,7 @@ export interface DMWorkspace {
     gridCols?: number;
     gridRows?: number;
     tacticalTokens?: TacticalMapToken[];
+    tacticalConfig?: TacticalMapConfig;
   };
   activeLiveVisual?: {
     kind: 'album' | 'tactical' | 'map';
@@ -589,6 +678,7 @@ export interface DMWorkspace {
     gridCols?: number;
     gridRows?: number;
     tacticalTokens?: TacticalMapToken[];
+    tacticalConfig?: TacticalMapConfig;
   };
   dmSkinId?: string; // Optional Creator Studio DM Skin ID
   installedDlcIds?: string[]; // Installed Creator Studio DLC package IDs
@@ -611,6 +701,7 @@ export interface LiveRoomProjection {
   tacticalGridCols?: number;
   tacticalGridRows?: number;
   tacticalTokens?: TacticalMapToken[];
+  tacticalConfig?: TacticalMapConfig;
   galleryPhotos?: Array<{
     id: string;
     title: string;

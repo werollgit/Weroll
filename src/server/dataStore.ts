@@ -1558,6 +1558,24 @@ export const dataStore = {
   getForumPosts(category?: string, roleFilter?: string, query?: string): ForumPost[] {
     const defaultPosts: ForumPost[] = [
       {
+        id: 'post-update-160',
+        category: 'app-updates',
+        title: 'WeRoll 1.6 Beta • Mapas Tácticos Multicapa, Control en Vivo de Fichas para el DM y Movimiento Exclusivo de Ficha Propia',
+        content: '¡Llega WeRoll 1.6 Beta! En esta actualización estrenamos el nuevo motor de Mapas Tácticos Multicapa: cuadrículas cuadrada y hexagonal con tamaños prefabricados (10x10, 25x25, 100x100 o personalizado); sistema de 4 capas (Capa 0 fondo base, Capas 1 a 3 para pintura de terreno, props PNG con ajuste automático de casillas y zonas rojas inaccesibles) con soporte de escaleras y puentes transitables que conectan pisos superiores e inferiores. En partidas en vivo, el Dungeon Master dispone de un editor en vivo de fichas para ajustar en tiempo real los Puntos de Golpe (PG con botones rápidos -5/-1/+1/+5), Clase de Armadura (CA), nombre, capa activa y tamaño (1x1 o 2x2) de cualquier criatura o personaje, mientras que los jugadores cuentan con movimiento exclusivo y protegido de su propia ficha, evitando mover monstruos o fichas de compañeros. Además, incluye Fog of War general y modular por áreas secretas revelables.',
+        authorEmail: 'admin@weroll.app',
+        authorName: 'Administrador Supremo',
+        authorTagId: 'adm',
+        authorFullTag: 'Administrador Supremo@adm',
+        authorPlayerType: 'both',
+        authorAppRole: 'admin',
+        flair: 'Actualización',
+        createdAt: 1793760000000,
+        upvotes: 114,
+        upvoters: ['admin@weroll.app', 'deadplanter@gmail.com'],
+        commentsCount: 9,
+        pinned: true,
+      },
+      {
         id: 'post-update-150',
         category: 'app-updates',
         title: 'WeRoll 1.5 Beta • Tooltip de Bonificadores en Carta Tarot, Último Dado en Tiempo Real en Modo Mapa, Estabilidad Multijugador de Vida (PG) y Subida Directa de PNG para el DM',
@@ -1573,7 +1591,7 @@ export const dataStore = {
         upvotes: 108,
         upvoters: ['admin@weroll.app', 'deadplanter@gmail.com'],
         commentsCount: 8,
-        pinned: true,
+        pinned: false,
       },
       {
         id: 'post-update-140',
@@ -1833,7 +1851,7 @@ export const dataStore = {
     if (!posts || posts.length === 0) {
       posts = defaultPosts;
       writeJSON('forum_posts.json', posts);
-    } else if (!posts.some((p) => p.id === 'post-update-150')) {
+    } else if (!posts.some((p) => p.id === 'post-update-160')) {
       posts = [defaultPosts[0], ...posts.map((p) => (p.pinned ? { ...p, pinned: false } : p))];
       writeJSON('forum_posts.json', posts);
     }
@@ -2410,6 +2428,19 @@ export const dataStore = {
 
   // --- PERSISTENT HOST SETTINGS & CHANGELOG ---
   getHostSettings(): HostSettings {
+    const v16BetaEntry: ChangelogEntry = {
+      version: '1.6 Beta',
+      date: '2026-11-03',
+      title: 'WeRoll 1.6 Beta • Mapas Tácticos Multicapa, Control en Vivo de Fichas para el DM y Movimiento Exclusivo de Ficha Propia',
+      changes: [
+        'Mapas Tácticos con Cuadrícula Cuadrada y Hexagonal: Opciones de tamaño de cuadrícula prefabricadas (10x10 mapa pequeño, 25x25 mapa mediano, 100x100 mapamundi o dimensiones personalizadas) con soporte fluido para cuadrícula cuadrada, hexagonal o modo sin cuadrícula.',
+        'Sistema de 4 Capas con Transición entre Pisos y Puentes: Capa 0 para el mapa base de fondo y Capas 1 a 3 para pintura de terreno y props PNG con reajuste automático de casillas (1x1, 2x2, 2x3, 3x3), zonas inaccesibles (rojo), vacíos transitables y escaleras/puentes activos en múltiples capas que conectan pisos superiores e inferiores.',
+        'Editor en Vivo de Fichas para el Dungeon Master: En el modo en vivo el DM puede seleccionar cualquier ficha de jugador o monstruo para modificar en tiempo real su nombre, puntos de golpe (PG actual y máximo con botones rápidos -5/-1/+1/+5 e ingreso directo), clase de armadura (CA), capa activa y tamaño (1x1 o 2x2), así como añadir y retirar fichas al instante.',
+        'Movimiento Exclusivo de la Ficha Propia para Jugadores: En partida en vivo cada jugador únicamente puede seleccionar y mover la ficha asociada a su propio personaje, respetando zonas bloqueadas, colisiones y transiciones por escaleras, bloqueando la selección o arrastre de fichas ajenas y monstruos.',
+        'Fog of War General y Modular por Áreas: Niebla de exploración dinámica con rango de visión en casillas para los jugadores y módulos de áreas secretas que el DM puede ocultar o revelar individualmente.',
+      ],
+    };
+
     const v15BetaEntry: ChangelogEntry = {
       version: '1.5 Beta',
       date: '2026-10-28',
@@ -2586,7 +2617,7 @@ export const dataStore = {
 
     const defaultSettings: HostSettings = {
       headerTitle: 'WeRoll',
-      headerSubtitle: 'Companion & DM Suite v1.5 Beta',
+      headerSubtitle: 'Companion & DM Suite v1.6 Beta',
       headerLogoIcon: 'shield',
       aiModel: 'gemini-flash-lite-latest',
       moderatorPassword: 'admin',
@@ -2597,27 +2628,28 @@ export const dataStore = {
         'Lo lamentamos, por el momento no puedes acceder a WeRoll. Manda mensaje a soporte@weroll.app si quieres una revisión manual de tu caso.',
       adminGreeting: {
         enabled: true,
-        title: 'Comunicado del Administrador',
+        title: 'Comunicado del Administrador • v1.6 Beta',
         message:
-          '¡Bienvenido a WeRoll 5E v1.5 Beta! Ahora puedes ver el tooltip del bono al acercar el cursor a tus estadísticas en la Carta Tarot, disfrutar de tiradas y vida (PG) sincronizadas sin saltos en partidas multijugador y subir archivos PNG directamente en tu Hoja de Dungeon Master.',
+          '¡Bienvenido a WeRoll 5E v1.6 Beta! Descubre el nuevo motor de Mapas Tácticos con 4 capas, cuadrículas cuadrada y hexagonal, transición por escaleras entre niveles y Fog of War dinámico. Además, en partidas en vivo el DM cuenta con un editor en vivo de fichas para ajustar vida (PG), armadura (CA), nombre y capa en tiempo real, mientras los jugadores cuentan con movimiento protegido de su propia ficha.',
         type: 'info',
         updatedAt: Date.now(),
       },
       developerNotice: {
         enabled: true,
-        title: 'WeRoll • Novedades v1.5 Beta',
+        title: 'WeRoll • Novedades v1.6 Beta',
         content:
-          '¡Versión 1.5 Beta disponible! Tooltips de bonificadores (+Bono) al pasar el cursor sobre las estadísticas en la Carta Tarot, sincronización en tiempo real del Último Dado Tirado en Modo Mapa, estabilización de Puntos de Golpe (PG) con múltiples jugadores en línea y subida directa de archivos PNG/Imagen en la Hoja del Dungeon Master.',
-        version: '1.5 Beta',
+          '¡Versión 1.6 Beta disponible! Mapas Tácticos Multicapa con cuadrículas cuadrada y hexagonal, sistema de 4 capas con escaleras/puentes transitables, niebla de guerra (Fog of War) general y modular, editor en vivo de fichas de jugador y monstruo para el Dungeon Master (nombre, PG, CA, capa y tamaño) y movimiento exclusivo de la ficha propia para jugadores en partidas en vivo.',
+        version: '1.6 Beta',
       },
       developerAnnouncement: {
         enabled: true,
-        title: 'WeRoll • Novedades v1.5 Beta',
+        title: 'WeRoll • Novedades v1.6 Beta',
         content:
-          '¡Versión 1.5 Beta disponible! Tooltips de bonificadores (+Bono) al pasar el cursor sobre las estadísticas en la Carta Tarot, sincronización en tiempo real del Último Dado Tirado en Modo Mapa, estabilización de Puntos de Golpe (PG) con múltiples jugadores en línea y subida directa de archivos PNG/Imagen en la Hoja del Dungeon Master.',
-        version: '1.5 Beta',
+          '¡Versión 1.6 Beta disponible! Mapas Tácticos Multicapa con cuadrículas cuadrada y hexagonal, sistema de 4 capas con escaleras/puentes transitables, niebla de guerra (Fog of War) general y modular, editor en vivo de fichas de jugador y monstruo para el Dungeon Master (nombre, PG, CA, capa y tamaño) y movimiento exclusivo de la ficha propia para jugadores en partidas en vivo.',
+        version: '1.6 Beta',
       },
       changelog: [
+        v16BetaEntry,
         v15BetaEntry,
         v14BetaEntry,
         v13BetaEntry,
@@ -2771,6 +2803,15 @@ export const dataStore = {
       finalChangelog[v15Idx] = v15BetaEntry;
     }
 
+    const v16Idx = finalChangelog.findIndex(
+      (entry) => entry.version && entry.version.toLowerCase().includes('1.6')
+    );
+    if (v16Idx === -1) {
+      finalChangelog = [v16BetaEntry, ...finalChangelog];
+    } else {
+      finalChangelog[v16Idx] = v16BetaEntry;
+    }
+
     const finalHeaderSubtitle =
       !current.headerSubtitle ||
       /v0\.(1|2|3|4|5|6|65|8|9|95)\b/i.test(current.headerSubtitle) ||
@@ -2779,7 +2820,8 @@ export const dataStore = {
       current.headerSubtitle.includes('1.1') ||
       current.headerSubtitle.includes('1.2') ||
       current.headerSubtitle.includes('1.3') ||
-      current.headerSubtitle.includes('1.4')
+      current.headerSubtitle.includes('1.4') ||
+      current.headerSubtitle.includes('1.5')
         ? defaultSettings.headerSubtitle
         : current.headerSubtitle;
 
@@ -2791,20 +2833,21 @@ export const dataStore = {
       developerNotice: {
         ...defaultSettings.developerNotice!,
         ...(current.developerNotice || {}),
-        version: '1.5 Beta',
-        title: 'WeRoll • Novedades v1.5 Beta',
+        version: '1.6 Beta',
+        title: 'WeRoll • Novedades v1.6 Beta',
         content: defaultSettings.developerNotice!.content,
       },
       developerAnnouncement: {
         enabled: true,
-        version: '1.5 Beta',
-        title: 'WeRoll • Novedades v1.5 Beta',
+        version: '1.6 Beta',
+        title: 'WeRoll • Novedades v1.6 Beta',
         content: defaultSettings.developerNotice!.content,
       },
       adminGreeting: current.adminGreeting
         ? {
             ...defaultSettings.adminGreeting!,
             ...current.adminGreeting,
+            title: 'Comunicado del Administrador • v1.6 Beta',
             message:
               current.adminGreeting.message &&
               (current.adminGreeting.message.includes('0.9') ||
@@ -2812,7 +2855,8 @@ export const dataStore = {
                 current.adminGreeting.message.includes('1.1') ||
                 current.adminGreeting.message.includes('1.2') ||
                 current.adminGreeting.message.includes('1.3') ||
-                current.adminGreeting.message.includes('1.4'))
+                current.adminGreeting.message.includes('1.4') ||
+                current.adminGreeting.message.includes('1.5'))
                 ? defaultSettings.adminGreeting!.message
                 : current.adminGreeting.message,
           }

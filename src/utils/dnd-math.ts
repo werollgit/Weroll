@@ -1572,18 +1572,20 @@ export interface LiveProjectionWorkspaceInput {
   autoSyncLiveOnZoneChange?: boolean;
   atlasMaps?: Record<string, string>;
   tacticalTokensByMapId?: Record<string, TacticalTokenPure[]>;
-  activeLiveVisual?: {
+    activeLiveVisual?: {
     kind: 'map' | 'album' | 'photo' | 'tactical';
     id: string;
     title: string;
     imageUrl?: string;
     folder?: string;
+    tacticalConfig?: any;
   } | null;
   activeSessionVisual?: {
     kind?: 'map' | 'album' | 'photo' | 'tactical';
     id?: string;
     title?: string;
     imageUrl?: string;
+    tacticalConfig?: any;
   } | null;
   locations?: {
     id?: string;
@@ -1593,6 +1595,7 @@ export interface LiveProjectionWorkspaceInput {
     gridCols?: number;
     gridRows?: number;
     tacticalTokens?: TacticalTokenPure[];
+    tacticalConfig?: any;
   }[];
   placeAlbumPhotos?: {
     id: string;
@@ -1616,6 +1619,7 @@ export function buildLiveProjectionFromWorkspace(
   gridCols?: number;
   gridRows?: number;
   tacticalTokens?: TacticalTokenPure[];
+  tacticalConfig?: any;
   galleryPhotos: { id: string; title: string; imageUrl: string; placePath?: string }[];
 } {
   const preferLiveVisualFolder =
@@ -1668,7 +1672,11 @@ export function buildLiveProjectionFromWorkspace(
   let visualImageUrl = '';
   let visualId = activeVisual?.id || `map-${activeFolder}`;
 
-  if (activeVisual && activeVisual.imageUrl) {
+  if (activeVisual && (activeVisual.kind === 'tactical' || activeVisual.tacticalConfig)) {
+    visualKind = 'tactical';
+    visualTitle = activeVisual.title || locationName;
+    visualImageUrl = activeVisual.imageUrl || activeVisual.tacticalConfig?.layers?.[0]?.bgImageUrl || '';
+  } else if (activeVisual && activeVisual.imageUrl) {
     visualKind = normalizedKind(activeVisual.kind);
     visualTitle = activeVisual.title || locationName;
     visualImageUrl = activeVisual.imageUrl;
@@ -1688,8 +1696,14 @@ export function buildLiveProjectionFromWorkspace(
   }
 
   const matchedTacticalLoc = (targetWs?.locations || []).find(
-    (l) => l.id === visualId || l.name === visualTitle
+    (l) =>
+      l.id === visualId ||
+      `tactical-${l.tacticalConfig?.id}` === visualId ||
+      `loc-tactical-${l.tacticalConfig?.id}` === l.id ||
+      l.name === visualTitle
   );
+  const resolvedTacticalConfig =
+    activeVisual?.tacticalConfig || matchedTacticalLoc?.tacticalConfig;
   const resolvedTokens =
     targetWs?.tacticalTokensByMapId?.[visualId] ||
     matchedTacticalLoc?.tacticalTokens ||
@@ -1702,9 +1716,12 @@ export function buildLiveProjectionFromWorkspace(
     visualKind,
     visualTitle,
     visualImageUrl,
-    gridCols: matchedTacticalLoc?.gridCols || 10,
-    gridRows: matchedTacticalLoc?.gridRows || 8,
+    gridCols:
+      resolvedTacticalConfig?.gridCols || matchedTacticalLoc?.gridCols || 10,
+    gridRows:
+      resolvedTacticalConfig?.gridRows || matchedTacticalLoc?.gridRows || 8,
     tacticalTokens: resolvedTokens,
+    tacticalConfig: resolvedTacticalConfig,
     galleryPhotos: galleryPhotos.slice(0, 12).map((p) => ({
       id: p.id,
       title: p.title,

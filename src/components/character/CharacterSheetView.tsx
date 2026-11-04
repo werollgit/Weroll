@@ -38,7 +38,11 @@ import { CharacterSettingsModal } from './CharacterSettingsModal';
 import { CharacterJournalBookModal } from './CharacterJournalBookModal';
 import { CharacterBackpackModal } from './CharacterBackpackModal';
 import { CharacterParchmentModal } from './CharacterParchmentModal';
-import { CharacterTarotCard, AlignmentBadgeIcon } from './CharacterTarotCard';
+import {
+  CharacterTarotCard,
+  AlignmentBadgeIcon,
+  invalidateTarotSkinCache,
+} from './CharacterTarotCard';
 import { GeometricSvgBorder } from '../common/GeometricSvgBorder';
 import {
   Character5e,
@@ -76,6 +80,8 @@ import {
   resolveDeckCardTemplate,
   resolveStatBoxGraphicConfig,
   buildSpatialBlockInlineStyle,
+  buildInnerButtonInlineStyle,
+  getInnerButtonLabel,
   buildGeometricElementStyle,
 } from '../../utils/playerSkinLayout';
 import { ABILITY_LABELS, SKILL_METADATA, SKILLS_5E } from '../../data/srd';
@@ -177,10 +183,19 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
       .then((r) => r.json())
       .then((data) => {
         if (!mounted) return;
-        if (Array.isArray(data.playerSkins)) setAvailablePlayerSkins(data.playerSkins);
-        if (Array.isArray(data.skins)) {
-          setCatalogPlayerSkinRecords(data.skins.filter((s: any) => s.scope === 'player'));
+        const mergedPlayerSkins: any[] = [];
+        if (Array.isArray(data.playerSkins)) {
+          setAvailablePlayerSkins(data.playerSkins);
+          mergedPlayerSkins.push(...data.playerSkins);
         }
+        if (Array.isArray(data.skins)) {
+          for (const s of data.skins) {
+            if (s.scope === 'player' && !mergedPlayerSkins.some((p) => p.id === s.id)) {
+              mergedPlayerSkins.push(s);
+            }
+          }
+        }
+        setCatalogPlayerSkinRecords(mergedPlayerSkins);
         if (data.activeOnlinePlayerSkinId) {
           setOnlineDefaultPlayerSkinId(data.activeOnlinePlayerSkinId);
         }
@@ -835,14 +850,22 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
   const handleOpenPlayerSkinModal = async () => {
     setIsSkinModalOpen(true);
     try {
+      invalidateTarotSkinCache();
       const res = await fetch('/api/creator/catalog');
       const data = await res.json();
+      const mergedPlayerSkins: any[] = [];
       if (Array.isArray(data.playerSkins)) {
         setAvailablePlayerSkins(data.playerSkins);
+        mergedPlayerSkins.push(...data.playerSkins);
       }
       if (Array.isArray(data.skins)) {
-        setCatalogPlayerSkinRecords(data.skins.filter((s: any) => s.scope === 'player'));
+        for (const s of data.skins) {
+          if (s.scope === 'player' && !mergedPlayerSkins.some((p) => p.id === s.id)) {
+            mergedPlayerSkins.push(s);
+          }
+        }
       }
+      setCatalogPlayerSkinRecords(mergedPlayerSkins);
       if (data.activeOnlinePlayerSkinId) {
         setOnlineDefaultPlayerSkinId(data.activeOnlinePlayerSkinId);
       }
@@ -1031,7 +1054,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
               : activeSkinTokens?.sheetFontFamily === 'mono'
               ? 'font-mono'
               : ''
-          } rounded-2xl p-3 sm:p-3.5 shadow-[0_15px_50px_rgba(0,0,0,0.85)] space-y-2.5 relative overflow-hidden`}
+          } rounded-2xl p-3 sm:p-3.5 shadow-[0_15px_50px_rgba(0,0,0,0.85)] flex flex-col gap-2.5 relative overflow-hidden`}
         >
           {activeSkinRecord &&
             !activeSkinRecord.hideCreatorCredit &&
@@ -1065,7 +1088,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
           >
             {/* Left: Geometric Gold Avatar + Dynamic Portrait Quick Switcher + Name + Subtitle */}
             <div className="flex items-center gap-3.5">
-              <div className="flex flex-col items-center gap-1 shrink-0">
+              <div
+                style={buildInnerButtonInlineStyle(getSheetBlock('identity_header'), 'portrait_box')}
+                className="flex flex-col items-center gap-1 shrink-0"
+              >
                 <div
                   onClick={() => !isLocked && setIsAvatarModalOpen(true)}
                   style={{
@@ -1149,19 +1175,25 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                 )}
               </div>
 
-              <div className="min-w-0">
+              <div
+                style={buildInnerButtonInlineStyle(getSheetBlock('identity_header'), 'char_name_box')}
+                className="min-w-0"
+              >
                 <div className="flex items-center gap-2.5 flex-wrap">
                   <h1 className="font-cinzel font-black text-xl sm:text-2xl text-[#f5e4be] tracking-wide leading-none">
                     {character.name}
                   </h1>
-                  <AlignmentBadgeIcon
-                    alignment={character.alignment}
-                    size="sm"
-                    customIconUrl={activeSkinTokens?.alignmentCustomIcons?.[character.alignment]}
-                  />
+                  <div style={buildInnerButtonInlineStyle(getSheetBlock('identity_header'), 'alignment_box')}>
+                    <AlignmentBadgeIcon
+                      alignment={character.alignment}
+                      size="sm"
+                      customIconUrl={activeSkinTokens?.alignmentCustomIcons?.[character.alignment]}
+                    />
+                  </div>
 
                   <button
                     type="button"
+                    style={buildInnerButtonInlineStyle(getSheetBlock('combat_stats_bar'), 'box_inspiration')}
                     onClick={() => {
                       if (isLocked) {
                         if (onUnlockRequest) onUnlockRequest();
@@ -1184,12 +1216,17 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                     ) : (
                       <Sparkles className="w-3 h-3 text-[#e2c275]" />
                     )}
-                    <span>INSPIRACIÓN</span>
+                    <span>
+                      {getInnerButtonLabel(getSheetBlock('combat_stats_bar'), 'box_inspiration', 'INSPIRACIÓN')}
+                    </span>
                   </button>
                 </div>
 
                 {/* Subtitle with Race, Class, Level, XP, Background, Alignment & circular Edit/Lock */}
-                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#d6c5a7]">
+                <div
+                  style={buildInnerButtonInlineStyle(getSheetBlock('identity_header'), 'level_xp_box')}
+                  className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#d6c5a7]"
+                >
                   <span className="font-semibold text-[#f3dfb2]">
                     {character.race} {character.characterClass}
                   </span>
@@ -1241,7 +1278,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
               className="grid grid-cols-4 gap-2 shrink-0"
             >
               <div
-                style={statBoxCustomStyle}
+                style={{
+                  ...statBoxCustomStyle,
+                  ...buildInnerButtonInlineStyle(getSheetBlock('combat_stats_bar'), 'box_ac'),
+                }}
                 className="bg-gradient-to-b from-[#1d202b] to-[#12141c] border-2 border-[#c8a45c]/70 rounded-xl px-2.5 py-1 text-center min-w-[68px] shadow-inner"
                 title={equippedBonuses.ac ? `Base ${character.armorClass ?? 10} + ${equippedBonuses.ac} por objetos equipados` : undefined}
               >
@@ -1256,7 +1296,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
 
               <button
                 type="button"
-                style={statBoxCustomStyle}
+                style={{
+                  ...statBoxCustomStyle,
+                  ...buildInnerButtonInlineStyle(getSheetBlock('combat_stats_bar'), 'box_init'),
+                }}
                 onClick={() => onTriggerRoll('Iniciativa', effectiveInitiativeBonus)}
                 className="bg-gradient-to-b from-[#1d202b] to-[#12141c] hover:from-[#262a38] border-2 border-[#c8a45c]/70 hover:border-[#f3dfb2] rounded-xl px-2.5 py-1 text-center min-w-[68px] shadow-inner transition cursor-pointer"
                 title={`Tirar Iniciativa (1d20 ${formatModifier(effectiveInitiativeBonus)})`}
@@ -1271,7 +1314,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
               </button>
 
               <div
-                style={statBoxCustomStyle}
+                style={{
+                  ...statBoxCustomStyle,
+                  ...buildInnerButtonInlineStyle(getSheetBlock('combat_stats_bar'), 'box_speed'),
+                }}
                 className="bg-gradient-to-b from-[#1d202b] to-[#12141c] border-2 border-[#c8a45c]/70 rounded-xl px-2.5 py-1 text-center min-w-[78px] shadow-inner"
                 title={equippedBonuses.speed ? `Base ${character.speed ?? 30} + ${equippedBonuses.speed} por objetos equipados` : undefined}
               >
@@ -1284,7 +1330,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
               </div>
 
               <div
-                style={statBoxCustomStyle}
+                style={{
+                  ...statBoxCustomStyle,
+                  ...buildInnerButtonInlineStyle(getSheetBlock('combat_stats_bar'), 'box_prof'),
+                }}
                 className="bg-gradient-to-b from-[#1d202b] to-[#12141c] border-2 border-[#c8a45c]/70 rounded-xl px-2.5 py-1 text-center min-w-[68px] shadow-inner"
               >
                 <div className="text-[10px] font-cinzel font-bold uppercase tracking-wider text-[#cbb692]">
@@ -1310,7 +1359,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
             {/* Left 7 Cols: PG Actual & Glowing Green HP Bar */}
             <div className="lg:col-span-7 bg-[#12141b]/95 border border-[#c8a45c]/45 rounded-xl px-3 py-2 flex flex-col justify-between gap-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+                <div
+                  style={buildInnerButtonInlineStyle(getSheetBlock('hp_and_rests_bar'), 'hp_main_counter')}
+                  className="flex items-center gap-2"
+                >
                   {activeSkinTokens?.sheetHeartCustomPngUrl ? (
                     <img
                       src={activeSkinTokens.sheetHeartCustomPngUrl}
@@ -1321,7 +1373,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                     <Heart className="w-4 h-4 text-red-500 fill-red-500/30" />
                   )}
                   <span className="font-cinzel font-bold text-xs sm:text-sm text-[#f5e4be]">
-                    PG Actual:{' '}
+                    {getSheetBlock('hp_and_rests_bar')?.titleText || 'PG Actual'}:{' '}
                     <strong className="text-white text-base">
                       {character.currentHp}/{character.maxHp}
                     </strong>
@@ -1336,23 +1388,25 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
+                    style={buildInnerButtonInlineStyle(getSheetBlock('hp_and_rests_bar'), 'btn_damage')}
                     onClick={() => {
                       setHpModalMode('damage');
                       setShowHpModal(true);
                     }}
                     className="px-2.5 py-0.5 rounded-lg bg-gradient-to-b from-red-900/90 to-red-950 hover:from-red-800 border border-red-500/60 text-red-100 font-cinzel font-bold text-[11px] transition cursor-pointer shadow"
                   >
-                    - Daño
+                    {getInnerButtonLabel(getSheetBlock('hp_and_rests_bar'), 'btn_damage', '- Daño')}
                   </button>
                   <button
                     type="button"
+                    style={buildInnerButtonInlineStyle(getSheetBlock('hp_and_rests_bar'), 'btn_heal')}
                     onClick={() => {
                       setHpModalMode('heal');
                       setShowHpModal(true);
                     }}
                     className="px-2.5 py-0.5 rounded-lg bg-gradient-to-b from-emerald-800/90 to-emerald-950 hover:from-emerald-700 border border-emerald-500/60 text-emerald-100 font-cinzel font-bold text-[11px] transition cursor-pointer shadow"
                   >
-                    + Curar
+                    {getInnerButtonLabel(getSheetBlock('hp_and_rests_bar'), 'btn_heal', '+ Curar')}
                   </button>
                   <button
                     type="button"
@@ -1369,7 +1423,10 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
 
               {/* Glowing Green Health Bar with Dados de Golpe overlaid inside right */}
               <div
-                style={hpBarContainerStyle}
+                style={{
+                  ...hpBarContainerStyle,
+                  ...buildInnerButtonInlineStyle(getSheetBlock('hp_and_rests_bar'), 'hp_progress_bar'),
+                }}
                 className="relative h-6 rounded-lg bg-[#0b0d12] border border-[#c8a45c]/50 overflow-hidden shadow-inner flex items-center"
               >
                 <div
@@ -1488,19 +1545,25 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
+                  style={buildInnerButtonInlineStyle(getSheetBlock('hp_and_rests_bar'), 'btn_short_rest')}
                   onClick={handleShortRestHitDie}
                   className="py-1 px-2 rounded-lg bg-gradient-to-r from-[#2c2219] to-[#211a14] hover:from-[#3b2d21] border border-[#c8a45c]/50 text-[#f3dfb2] font-cinzel font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
                 >
                   <Flame className="w-3 h-3 text-amber-400" />
-                  <span>Descanso Corto</span>
+                  <span>
+                    {getInnerButtonLabel(getSheetBlock('hp_and_rests_bar'), 'btn_short_rest', 'Descanso Corto')}
+                  </span>
                 </button>
                 <button
                   type="button"
+                  style={buildInnerButtonInlineStyle(getSheetBlock('hp_and_rests_bar'), 'btn_long_rest')}
                   onClick={handleLongRest}
                   className="py-1 px-2 rounded-lg bg-gradient-to-r from-[#1d2233] to-[#161926] hover:from-[#262d45] border border-indigo-400/50 text-indigo-100 font-cinzel font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
                 >
                   <Sparkles className="w-3 h-3 text-indigo-300" />
-                  <span>Descanso Largo</span>
+                  <span>
+                    {getInnerButtonLabel(getSheetBlock('hp_and_rests_bar'), 'btn_long_rest', 'Descanso Largo')}
+                  </span>
                 </button>
               </div>
             </div>
@@ -1727,6 +1790,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                       <button
                         type="button"
                         data-testid="player-deck-combat"
+                        style={buildInnerButtonInlineStyle(getSheetBlock('game_decks_panel'), 'tab_deck_combat')}
                         onClick={() => {
                           setActiveDeck('combat');
                           setPlayerDeckScrollIndex(0);
@@ -1742,7 +1806,11 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                         </div>
                         <div className="min-w-0">
                           <div className="font-cinzel font-black text-[11px] sm:text-xs text-[#f5e4be] leading-tight uppercase">
-                            {activeSkinTokens?.deckCombatTitleText || 'COMBATES Y ACCIONES'}
+                            {getInnerButtonLabel(
+                              getSheetBlock('game_decks_panel'),
+                              'tab_deck_combat',
+                              activeSkinTokens?.deckCombatTitleText || 'COMBATES Y ACCIONES'
+                            )}
                           </div>
                           <div className="text-[10px] text-amber-300/90 font-mono mt-0.5">
                             {combatCardsCount} Cartas
@@ -1754,6 +1822,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                       <button
                         type="button"
                         data-testid="player-deck-skills"
+                        style={buildInnerButtonInlineStyle(getSheetBlock('game_decks_panel'), 'tab_deck_skills')}
                         onClick={() => {
                           setActiveDeck('skills');
                           setPlayerDeckScrollIndex(0);
@@ -1769,7 +1838,11 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                         </div>
                         <div className="min-w-0">
                           <div className="font-cinzel font-black text-[11px] sm:text-xs text-cyan-100 leading-tight uppercase">
-                            {activeSkinTokens?.deckSkillsTitleText || 'HABILIDADES'}
+                            {getInnerButtonLabel(
+                              getSheetBlock('game_decks_panel'),
+                              'tab_deck_skills',
+                              activeSkinTokens?.deckSkillsTitleText || 'HABILIDADES'
+                            )}
                           </div>
                           <div className="text-[10px] text-cyan-300 font-mono mt-0.5">
                             {possessedSkills.length} Cartas
@@ -1781,6 +1854,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                       <button
                         type="button"
                         data-testid="player-deck-spells"
+                        style={buildInnerButtonInlineStyle(getSheetBlock('game_decks_panel'), 'tab_deck_spells')}
                         onClick={() => {
                           setActiveDeck('spells');
                           setPlayerDeckScrollIndex(0);
@@ -1796,7 +1870,11 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                         </div>
                         <div className="min-w-0">
                           <div className="font-cinzel font-black text-[11px] sm:text-xs text-purple-100 leading-tight uppercase">
-                            {activeSkinTokens?.deckSpellsTitleText || 'LANZAR CONJUROS'}
+                            {getInnerButtonLabel(
+                              getSheetBlock('game_decks_panel'),
+                              'tab_deck_spells',
+                              activeSkinTokens?.deckSpellsTitleText || 'LANZAR CONJUROS'
+                            )}
                           </div>
                           <div className="text-[10px] text-purple-300 font-mono mt-0.5">
                             {preparedSpells.length} Preparados
@@ -2349,7 +2427,9 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
             >
               <div className="flex items-center gap-3">
                 <h2 className="font-cinzel font-black text-base sm:text-lg text-[#e7c67b] tracking-wider uppercase whitespace-nowrap">
-                  {activeSkinTokens?.adventurerCornerTitleText || 'EL RINCÓN DEL AVENTURERO'}
+                  {getSheetBlock('adventurer_corner_panel')?.titleText ||
+                    activeSkinTokens?.adventurerCornerTitleText ||
+                    'EL RINCÓN DEL AVENTURERO'}
                 </h2>
                 <div className="h-px flex-1 bg-gradient-to-r from-[#c8a45c]/60 to-transparent" />
               </div>
@@ -2358,6 +2438,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
               <button
                 type="button"
                 data-testid="btn-rincon-inventario"
+                style={buildInnerButtonInlineStyle(getSheetBlock('adventurer_corner_panel'), 'btn_open_inventory')}
                 onClick={() => setIsBackpackModalOpen(true)}
                 className="relative w-full rounded-2xl border-2 border-[#c8a45c] ring-1 ring-inset ring-[#e2c275]/25 hover:border-[#f5e4be] bg-gradient-to-b from-[#1e2330] via-[#191d28] to-[#141720] p-3 flex flex-col items-center justify-center text-center shadow-xl transition cursor-pointer group flex-1"
               >
@@ -2450,7 +2531,11 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                 </div>
 
                 <h3 className="font-cinzel font-black text-sm sm:text-base text-[#e7c67b] group-hover:text-[#fff1cc] uppercase tracking-wider mt-2">
-                  {activeSkinTokens?.sheetBackpackLabelText || 'EQUIPO E INVENTARIO'}
+                  {getInnerButtonLabel(
+                    getSheetBlock('adventurer_corner_panel'),
+                    'btn_open_inventory',
+                    activeSkinTokens?.sheetBackpackLabelText || 'EQUIPO E INVENTARIO'
+                  )}
                 </h3>
 
                 <div className="flex items-center justify-center gap-1.5 mt-0.5 text-xs font-sans">
@@ -2470,6 +2555,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                 <button
                   type="button"
                   data-testid="btn-rincon-diario"
+                  style={buildInnerButtonInlineStyle(getSheetBlock('adventurer_corner_panel'), 'btn_open_journal')}
                   onClick={() => setIsJournalModalOpen(true)}
                   className="relative rounded-2xl border-2 border-[#8c94a4]/65 hover:border-[#e2c275] bg-gradient-to-b from-[#1e2330] via-[#181c27] to-[#131720] p-2.5 flex flex-col items-center justify-between text-center shadow-lg transition cursor-pointer group"
                 >
@@ -2524,7 +2610,11 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
 
                   <div className="mt-1.5">
                     <h3 className="font-cinzel font-black text-xs text-[#e7c67b] group-hover:text-[#fff1cc] uppercase leading-tight">
-                      {activeSkinTokens?.sheetJournalLabelText || 'DIARIO DE'}
+                      {getInnerButtonLabel(
+                        getSheetBlock('adventurer_corner_panel'),
+                        'btn_open_journal',
+                        activeSkinTokens?.sheetJournalLabelText || 'DIARIO DE'
+                      )}
                       <br />
                       {character.name}
                     </h3>
@@ -2538,6 +2628,7 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
                 <button
                   type="button"
                   data-testid="btn-rincon-rasgos"
+                  style={buildInnerButtonInlineStyle(getSheetBlock('adventurer_corner_panel'), 'btn_open_traits')}
                   onClick={() => setIsParchmentModalOpen(true)}
                   className="relative rounded-2xl border-2 border-[#8c94a4]/65 hover:border-[#e2c275] bg-gradient-to-b from-[#1e2330] via-[#181c27] to-[#131720] p-2.5 flex flex-col items-center justify-between text-center shadow-lg transition cursor-pointer group"
                 >
@@ -2603,7 +2694,11 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
 
                   <div className="mt-1.5">
                     <h3 className="font-cinzel font-black text-xs text-[#e7c67b] group-hover:text-[#fff1cc] uppercase leading-tight">
-                      {activeSkinTokens?.sheetTraitsLabelText || 'RASGOS Y TRASFONDO'}
+                      {getInnerButtonLabel(
+                        getSheetBlock('adventurer_corner_panel'),
+                        'btn_open_traits',
+                        activeSkinTokens?.sheetTraitsLabelText || 'RASGOS Y TRASFONDO'
+                      )}
                     </h3>
                     <p className="text-[10px] text-[#8e96aa] mt-0.5 line-clamp-1">
                       {character.background} • Personalidad e Ideales
@@ -2620,113 +2715,131 @@ export const CharacterSheetView: React.FC<CharacterSheetViewProps> = ({
         {/* RIGHT SIDEBAR IN TABLE MODE (SALA EN VIVO + CARTA DE JUGADOR)     */}
         {/* ================================================================= */}
         {isInActiveRoom && (
-          <div className="xl:col-span-3 space-y-3">
+          <div className="xl:col-span-3 flex flex-col gap-3">
             {/* 1. SALA EN VIVO (Aliados 4x2 max 8 & Enemigos 4x2 max 8) */}
-            <div className="bg-gradient-to-b from-[#1a1c24] to-[#12141b] border-2 border-[#c8a45c]/65 rounded-2xl p-3.5 shadow-xl space-y-3">
-              <div className="flex items-center justify-between border-b border-[#c8a45c]/30 pb-2">
-                <h3 className="font-cinzel font-black text-sm text-[#f5e4be] tracking-wider uppercase">
-                  SALA EN VIVO
-                </h3>
-                <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  {roomCode}
-                </span>
-              </div>
-
-              {/* Aliados (Max 8, 4x2 grid) */}
-              <div>
-                <div className="flex items-center justify-between text-xs font-cinzel font-bold text-[#cbb692] mb-1.5">
-                  <span>Aliados</span>
-                  <span className="text-[10px] font-mono text-[#e2c275]">
-                    {tableAllies.length}/8
+            {!getSheetBlock('live_table_combatants_bar')?.hidden && (
+              <div
+                style={buildSpatialBlockInlineStyle(getSheetBlock('live_table_combatants_bar'), false)}
+                className="bg-gradient-to-b from-[#1a1c24] to-[#12141b] border-2 border-[#c8a45c]/65 rounded-2xl p-3.5 shadow-xl space-y-3"
+              >
+                <div className="flex items-center justify-between border-b border-[#c8a45c]/30 pb-2">
+                  <h3 className="font-cinzel font-black text-sm text-[#f5e4be] tracking-wider uppercase">
+                    {getSheetBlock('live_table_combatants_bar')?.titleText || 'SALA EN VIVO'}
+                  </h3>
+                  <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    {roomCode}
                   </span>
                 </div>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {tableAllies.map((ally) => {
-                    const pct = Math.min(
-                      100,
-                      Math.max(0, (ally.hp / Math.max(1, ally.maxHp)) * 100)
-                    );
-                    return (
-                      <div
-                        key={ally.id}
-                        className="bg-[#11131a] border border-[#c8a45c]/50 rounded-lg p-1 flex flex-col items-center text-center"
-                        title={`${ally.name}: ${ally.hp}/${ally.maxHp} PG`}
-                      >
-                        <EntityAvatar
-                          avatarType={ally.avatarType}
-                          customUrl={ally.avatarCustomUrl}
-                          iconId={ally.avatarIcon || 'anonymous'}
-                          size="sm"
-                          className="rounded-md"
-                        />
-                        <span className="text-[9px] font-cinzel font-bold text-[#f3dfb2] truncate w-full mt-1">
-                          {ally.name}
-                        </span>
-                        <div className="w-full h-2.5 bg-black/80 rounded-full overflow-hidden border border-emerald-500/40 mt-0.5 relative">
-                          <div
-                            className="h-full bg-emerald-500"
-                            style={{ width: `${pct}%` }}
-                          />
-                          <span className="absolute inset-0 text-[8px] font-mono font-bold text-white flex items-center justify-center leading-none">
-                            {ally.hp}/{ally.maxHp}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
 
-              {/* Enemigos (Max 8, 4x2 grid) */}
-              <div>
-                <div className="flex items-center justify-between text-xs font-cinzel font-bold text-[#cbb692] mb-1.5">
-                  <span>Enemigos</span>
-                  <span className="text-[10px] font-mono text-red-400">
-                    {tableEnemies.length}/8
-                  </span>
-                </div>
-                {tableEnemies.length === 0 ? (
-                  <div className="bg-[#11131a]/80 border border-stone-800 rounded-xl p-2.5 text-center text-[11px] text-stone-400 font-cinzel">
-                    Sin enemigos visibles en la mesa
+                {/* Aliados (Max 8, 4x2 grid) */}
+                <div>
+                  <div className="flex items-center justify-between text-xs font-cinzel font-bold text-[#cbb692] mb-1.5">
+                    <span>Aliados</span>
+                    <span className="text-[10px] font-mono text-[#e2c275]">
+                      {tableAllies.length}/8
+                    </span>
                   </div>
-                ) : (
                   <div className="grid grid-cols-4 gap-1.5">
-                    {tableEnemies.map((enemy) => {
+                    {tableAllies.map((ally, idx) => {
                       const pct = Math.min(
                         100,
-                        Math.max(0, (enemy.hp / Math.max(1, enemy.maxHp)) * 100)
+                        Math.max(0, (ally.hp / Math.max(1, ally.maxHp)) * 100)
                       );
                       return (
                         <div
-                          key={enemy.id}
-                          className="bg-[#1a1113] border border-red-500/50 rounded-lg p-1 flex flex-col items-center text-center"
-                          title={`${enemy.name}: ${enemy.hp}/${enemy.maxHp} PG`}
+                          key={ally.id}
+                          style={buildInnerButtonInlineStyle(
+                            getSheetBlock('live_table_combatants_bar'),
+                            idx % 2 === 0 ? 'ally_chip_1' : 'ally_chip_2'
+                          )}
+                          className="bg-[#11131a] border border-[#c8a45c]/50 rounded-lg p-1 flex flex-col items-center text-center"
+                          title={`${ally.name}: ${ally.hp}/${ally.maxHp} PG`}
                         >
-                          <EntityAvatar iconId="skull" size="sm" className="rounded-md" />
-                          <span className="text-[9px] font-cinzel font-bold text-red-200 truncate w-full mt-1">
-                            {enemy.name}
+                          <EntityAvatar
+                            avatarType={ally.avatarType}
+                            customUrl={ally.avatarCustomUrl}
+                            iconId={ally.avatarIcon || 'anonymous'}
+                            size="sm"
+                            className="rounded-md"
+                          />
+                          <span className="text-[9px] font-cinzel font-bold text-[#f3dfb2] truncate w-full mt-1">
+                            {ally.name}
                           </span>
-                          <div className="w-full h-2.5 bg-black/80 rounded-full overflow-hidden border border-red-500/40 mt-0.5 relative">
-                            <div className="h-full bg-red-600" style={{ width: `${pct}%` }} />
+                          <div className="w-full h-2.5 bg-black/80 rounded-full overflow-hidden border border-emerald-500/40 mt-0.5 relative">
+                            <div
+                              className="h-full bg-emerald-500"
+                              style={{ width: `${pct}%` }}
+                            />
                             <span className="absolute inset-0 text-[8px] font-mono font-bold text-white flex items-center justify-center leading-none">
-                              {enemy.hp}/{enemy.maxHp}
+                              {ally.hp}/{ally.maxHp}
                             </span>
                           </div>
                         </div>
                       );
                     })}
                   </div>
-                )}
+                </div>
+
+                {/* Enemigos (Max 8, 4x2 grid) */}
+                <div>
+                  <div className="flex items-center justify-between text-xs font-cinzel font-bold text-[#cbb692] mb-1.5">
+                    <span>Enemigos</span>
+                    <span className="text-[10px] font-mono text-red-400">
+                      {tableEnemies.length}/8
+                    </span>
+                  </div>
+                  {tableEnemies.length === 0 ? (
+                    <div className="bg-[#11131a]/80 border border-stone-800 rounded-xl p-2.5 text-center text-[11px] text-stone-400 font-cinzel">
+                      Sin enemigos visibles en la mesa
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {tableEnemies.map((enemy, idx) => {
+                        const pct = Math.min(
+                          100,
+                          Math.max(0, (enemy.hp / Math.max(1, enemy.maxHp)) * 100)
+                        );
+                        return (
+                          <div
+                            key={enemy.id}
+                            style={buildInnerButtonInlineStyle(
+                              getSheetBlock('live_table_combatants_bar'),
+                              idx % 2 === 0 ? 'enemy_chip_1' : 'enemy_chip_2'
+                            )}
+                            className="bg-[#1a1113] border border-red-500/50 rounded-lg p-1 flex flex-col items-center text-center"
+                            title={`${enemy.name}: ${enemy.hp}/${enemy.maxHp} PG`}
+                          >
+                            <EntityAvatar iconId="skull" size="sm" className="rounded-md" />
+                            <span className="text-[9px] font-cinzel font-bold text-red-200 truncate w-full mt-1">
+                              {enemy.name}
+                            </span>
+                            <div className="w-full h-2.5 bg-black/80 rounded-full overflow-hidden border border-red-500/40 mt-0.5 relative">
+                              <div className="h-full bg-red-600" style={{ width: `${pct}%` }} />
+                              <span className="absolute inset-0 text-[8px] font-mono font-bold text-white flex items-center justify-center leading-none">
+                                {enemy.hp}/{enemy.maxHp}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 2. CARTA DE JUGADOR (Tarot-Proportioned Character Card with Alignment Badge & Coin Medallions) */}
-            <CharacterTarotCard
-              character={character}
-              isOnline={true}
-              onClickCoinPouch={() => setIsBackpackModalOpen(true)}
-            />
+            {!getSheetBlock('sheet_tarot_dock')?.hidden && (
+              <div style={buildSpatialBlockInlineStyle(getSheetBlock('sheet_tarot_dock'), false)}>
+                <CharacterTarotCard
+                  character={character}
+                  skinTokens={activeSkinTokens}
+                  isOnline={true}
+                  onClickCoinPouch={() => setIsBackpackModalOpen(true)}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>

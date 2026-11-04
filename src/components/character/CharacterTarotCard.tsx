@@ -7,6 +7,7 @@ import {
   AppSkinThemeTokens,
   DiceRollResult,
   TarotHpVisualStyle,
+  TarotCardModuleItem,
 } from '../../types/dnd';
 import { soundManager } from '../../utils/audio';
 import {
@@ -21,6 +22,7 @@ import {
 } from '../../utils/dnd-math';
 import {
   resolveTarotStudioConfig,
+  createDefaultTarotModules,
   buildGeometricElementStyle,
 } from '../../utils/playerSkinLayout';
 import { GeometricSvgBorder } from '../common/GeometricSvgBorder';
@@ -30,6 +32,19 @@ import { GeometricSvgBorder } from '../common/GeometricSvgBorder';
 let cachedPlayerSkinsMap: Record<string, AppSkinThemeTokens> = {};
 let catalogFetchPromise: Promise<void> | null = null;
 const skinCacheListeners = new Set<() => void>();
+
+export function getCachedSkinTokensById(skinId?: string | null): AppSkinThemeTokens | undefined {
+  if (!skinId) return undefined;
+  return cachedPlayerSkinsMap[skinId];
+}
+
+export function subscribeToSkinCatalogCache(cb: () => void): () => void {
+  skinCacheListeners.add(cb);
+  fetchTarotSkinCatalogOnce();
+  return () => {
+    skinCacheListeners.delete(cb);
+  };
+}
 
 export function invalidateTarotSkinCache() {
   catalogFetchPromise = null;
@@ -42,15 +57,24 @@ function fetchTarotSkinCatalogOnce(force = false) {
   catalogFetchPromise = fetch('/api/creator/catalog')
     .then((r) => r.json())
     .then((data) => {
-      if (Array.isArray(data?.skins)) {
+      const allSkins = [
+        ...(Array.isArray(data?.skins) ? data.skins : []),
+        ...(Array.isArray(data?.playerSkins) ? data.playerSkins : []),
+        ...(Array.isArray(data?.dmSkins) ? data.dmSkins : []),
+        ...(Array.isArray(data?.appSkins) ? data.appSkins : []),
+      ];
+      if (allSkins.length > 0) {
         const nextMap: Record<string, AppSkinThemeTokens> = {};
-        for (const s of data.skins) {
+        for (const s of allSkins) {
           if (s && s.id && s.themeTokens) {
             nextMap[s.id] = s.themeTokens;
           }
         }
         if (data.activeOnlinePlayerSkinId && nextMap[data.activeOnlinePlayerSkinId]) {
           nextMap['__online_default__'] = nextMap[data.activeOnlinePlayerSkinId];
+        }
+        if (data.activeOnlineDmSkinId && nextMap[data.activeOnlineDmSkinId]) {
+          nextMap['__online_dm_default__'] = nextMap[data.activeOnlineDmSkinId];
         }
         cachedPlayerSkinsMap = nextMap;
         skinCacheListeners.forEach((cb) => cb());
@@ -932,6 +956,89 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
     );
   };
 
+  const defaultTarotMods = React.useMemo(() => {
+    const map: Record<string, TarotCardModuleItem> = {};
+    for (const m of createDefaultTarotModules()) {
+      map[m.id] = m;
+    }
+    return map;
+  }, []);
+
+  const currentTarotModsMap = React.useMemo(() => {
+    const map: Record<string, TarotCardModuleItem> = {};
+    for (const m of tarotCfg.modules || []) {
+      map[m.id] = m;
+    }
+    return map;
+  }, [tarotCfg.modules]);
+
+  const getTarotModOffsetStyle = (modId: string): React.CSSProperties => {
+    const cur = currentTarotModsMap[modId];
+    const def = defaultTarotMods[modId];
+    if (!cur) return {};
+    if (cur.visible === false || cur.opacity <= 0.01) {
+      return { display: 'none' };
+    }
+    const scaleFactor = isMini ? 0.55 : compact ? 0.78 : 1;
+    const dx = def ? (cur.x - def.x) * scaleFactor : 0;
+    const dy = def ? (cur.y - def.y) * scaleFactor : 0;
+    return {
+      position: 'relative',
+      opacity: cur.opacity,
+      transform: dx !== 0 || dy !== 0 ? `translate(${Math.round(dx)}px, ${Math.round(dy)}px)` : undefined,
+      color: cur.textColor || undefined,
+      fontFamily: cur.fontFamily || undefined,
+    };
+  };
+
+  const renderLiveModuleBadge = (mod: TarotCardModuleItem) => {
+    if (mod.visible === false || mod.opacity <= 0.01) return null;
+    let displayVal = mod.exampleValue || '';
+    if (mod.kind === 'hp_bar') displayVal = `${currentHp}/${maxHp}`;
+    else if (mod.kind === 'stat_ca') displayVal = `${ac}`;
+    else if (mod.kind === 'stat_init') displayVal = formatModifier(initiative);
+    else if (mod.kind === 'stat_speed') displayVal = `${speed}ft`;
+    else if (mod.kind === 'stat_pp') displayVal = `${pp}`;
+    else if (mod.kind === 'coin_gp') displayVal = `${currency.gp || 0} PO`;
+    else if (mod.kind === 'coin_sp') displayVal = `${currency.sp || 0} PP`;
+    else if (mod.kind === 'coin_cp') displayVal = `${currency.cp || 0} PC`;
+    else if (mod.kind === 'coin_pp') displayVal = `${currency.pp || 0} PL`;
+    else if (mod.kind === 'alignment_badge') displayVal = alignment;
+    else if (mod.kind === 'character_name') displayVal = name;
+    else if (mod.kind === 'race_class') displayVal = raceAndClass;
+    else if (mod.kind === 'level_xp_badge') displayVal = `Niv. ${level}`;
+    else if (mod.kind === 'ability_str') displayVal = `${strScore}`;
+    else if (mod.kind === 'ability_dex') displayVal = `${dexScore}`;
+    else if (mod.kind === 'ability_con') displayVal = `${conScore}`;
+    else if (mod.kind === 'ability_int') displayVal = `${intScore}`;
+    else if (mod.kind === 'ability_wis') displayVal = `${wisScore}`;
+    else if (mod.kind === 'ability_cha') displayVal = `${chaScore}`;
+
+    return (
+      <div
+        key={mod.id}
+        data-testid={`tarot-custom-mod-${mod.id}`}
+        style={{
+          backgroundColor: mod.bgColor || '#11141d',
+          borderColor: mod.hideBorder ? 'transparent' : mod.borderColor || '#c8a45c',
+          borderWidth: mod.hideBorder ? 0 : `${mod.borderWidthPx ?? 1}px`,
+          borderStyle: mod.hideBorder ? 'none' : 'solid',
+          borderRadius: mod.shape === 'circle' ? '9999px' : mod.shape === 'square' ? '0px' : `${mod.borderRadiusPx ?? 8}px`,
+          color: mod.textColor || '#f5e4be',
+          opacity: mod.opacity ?? 1,
+        }}
+        className="px-2 py-1 text-[10px] font-cinzel font-bold flex items-center justify-between gap-1.5 shadow"
+      >
+        {mod.label && <span className="text-[8px] opacity-80 uppercase">{mod.label}</span>}
+        <span className="font-mono font-black">{displayVal}</span>
+      </div>
+    );
+  };
+
+  const extraSideModules = (tarotCfg.modules || []).filter(
+    (m) => m.side === activeSide && !defaultTarotMods[m.id] && m.visible !== false
+  );
+
   if (activeSide === 'back') {
     const backBgImg =
       tarotCfg.backBgImageUrl || effectiveSkinTokens?.tarotCardBackCustomPngUrl;
@@ -1059,11 +1166,20 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
           {/* Optional Lore / Quote on Back */}
           {isTarotElementVisibleOnSide('loreQuote', 'back', tarotCfg.elementSides) &&
-            (character?.appearance || character?.backstory) && (
-              <p className="text-[10px] italic text-amber-100/80 text-center line-clamp-3 bg-black/45 p-2 rounded-xl border border-white/10">
-                “{character?.appearance || character?.backstory}”
+            (character?.appearance || character?.backstory || tarotCfg.backLoreQuoteText) && (
+              <p
+                style={getTarotModOffsetStyle('mod_lore_quote')}
+                className="text-[10px] italic text-amber-100/80 text-center line-clamp-3 bg-black/45 p-2 rounded-xl border border-white/10"
+              >
+                “{character?.appearance || character?.backstory || tarotCfg.backLoreQuoteText}”
               </p>
             )}
+
+          {extraSideModules.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {extraSideModules.map((mod) => renderLiveModuleBadge(mod))}
+            </div>
+          )}
         </div>
 
         <div className="text-center text-[9px] font-mono text-stone-400 z-20">
@@ -1166,6 +1282,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
       {/* Top-Right Online Status Pill + Map Mode Last Die Roll Badge */}
       {(isOnline || showLastRollInMap) && (
         <div
+          style={getTarotModOffsetStyle('mod_online_badge')}
           className={`absolute ${
             isMini ? 'top-2 right-2.5 gap-1' : 'top-3.5 right-4 gap-1.5'
           } flex flex-col items-end z-30`}
@@ -1192,7 +1309,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
       {/* 1. Geometric / Cinema Pop-Out Portrait + Overlapping Level & XP Ribbon */}
       {isTarotElementVisibleOnSide('identity', 'front', tarotCfg.elementSides) && (
-        <div className="flex flex-col items-center pt-0.5">
+        <div style={getTarotModOffsetStyle('mod_portrait')} className="flex flex-col items-center pt-0.5">
           <div
             style={{
               ...portraitGeom,
@@ -1240,6 +1357,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
           {/* Overlapping Ribbon Banner: Niv. X • Y XP */}
           <div
+            style={getTarotModOffsetStyle('mod_level_xp')}
             className={`relative ${
               isMini ? '-mt-2.5' : '-mt-3.5'
             } z-30 flex items-center justify-center`}
@@ -1279,10 +1397,15 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
       {/* 2. Character Name + Alignment Badge + Race • Class */}
       {isTarotElementVisibleOnSide('identity', 'front', tarotCfg.elementSides) && (
-        <div className="text-center space-y-0.5 px-1">
+        <div style={getTarotModOffsetStyle('mod_char_name')} className="text-center space-y-0.5 px-1">
           <div className="flex items-center justify-center gap-1.5 flex-nowrap max-w-full">
             <h3
-              style={{ color: tarotCfg.titleColor || undefined }}
+              style={{
+                color:
+                  currentTarotModsMap['mod_char_name']?.textColor ||
+                  tarotCfg.titleColor ||
+                  undefined,
+              }}
               className={`font-cinzel font-black ${
                 isMini
                   ? 'text-xs sm:text-sm'
@@ -1295,15 +1418,23 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
               {name}
             </h3>
             {isTarotElementVisibleOnSide('alignment', 'front', tarotCfg.elementSides) && (
-              <AlignmentBadgeIcon
-                alignment={alignment}
-                size={isMini ? 'xs' : 'sm'}
-                customIconUrl={effectiveSkinTokens?.alignmentCustomIcons?.[alignment]}
-              />
+              <div style={getTarotModOffsetStyle('mod_alignment')}>
+                <AlignmentBadgeIcon
+                  alignment={alignment}
+                  size={isMini ? 'xs' : 'sm'}
+                  customIconUrl={effectiveSkinTokens?.alignmentCustomIcons?.[alignment]}
+                />
+              </div>
             )}
           </div>
           <div
-            style={{ color: tarotCfg.subtitleColor || undefined }}
+            style={{
+              ...getTarotModOffsetStyle('mod_race_class'),
+              color:
+                currentTarotModsMap['mod_race_class']?.textColor ||
+                tarotCfg.subtitleColor ||
+                undefined,
+            }}
             className={`${
               isMini ? 'text-[10px]' : 'text-xs sm:text-sm'
             } text-[#9aa3b5] font-medium tracking-wide truncate`}
@@ -1318,6 +1449,11 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
         <div className={`grid grid-cols-4 ${isMini ? 'gap-1' : 'gap-1.5 sm:gap-2'}`}>
           {/* CA */}
           <div
+            style={{
+              ...getTarotModOffsetStyle('mod_stat_ca'),
+              backgroundColor: currentTarotModsMap['mod_stat_ca']?.bgColor || undefined,
+              borderColor: currentTarotModsMap['mod_stat_ca']?.borderColor || undefined,
+            }}
             className={`${
               isMini ? 'rounded-lg py-1 px-0.5' : 'rounded-xl py-1.5 px-1'
             } bg-[#11141d] border border-[#c8a45c]/70 flex flex-col items-center justify-center shadow-inner`}
@@ -1328,7 +1464,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
               } font-cinzel font-bold text-[#cbb692] uppercase`}
             >
               <Shield className={isMini ? 'w-2.5 h-2.5 text-[#d6b265]' : 'w-3 h-3 text-[#d6b265]'} />
-              <span>CA</span>
+              <span>{currentTarotModsMap['mod_stat_ca']?.label || 'CA'}</span>
             </div>
             <span
               className={`font-cinzel font-black ${
@@ -1341,6 +1477,11 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
           {/* INIC */}
           <div
+            style={{
+              ...getTarotModOffsetStyle('mod_stat_init'),
+              backgroundColor: currentTarotModsMap['mod_stat_init']?.bgColor || undefined,
+              borderColor: currentTarotModsMap['mod_stat_init']?.borderColor || undefined,
+            }}
             className={`${
               isMini ? 'rounded-lg py-1 px-0.5' : 'rounded-xl py-1.5 px-1'
             } bg-[#11141d] border border-[#c8a45c]/70 flex flex-col items-center justify-center shadow-inner`}
@@ -1351,7 +1492,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
               } font-cinzel font-bold text-[#cbb692] uppercase`}
             >
               <Zap className={isMini ? 'w-2.5 h-2.5 text-[#d6b265]' : 'w-3 h-3 text-[#d6b265]'} />
-              <span>INIC</span>
+              <span>{currentTarotModsMap['mod_stat_init']?.label || 'INIC'}</span>
             </div>
             <span
               className={`font-cinzel font-black ${
@@ -1364,6 +1505,11 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
           {/* VEL */}
           <div
+            style={{
+              ...getTarotModOffsetStyle('mod_stat_speed'),
+              backgroundColor: currentTarotModsMap['mod_stat_speed']?.bgColor || undefined,
+              borderColor: currentTarotModsMap['mod_stat_speed']?.borderColor || undefined,
+            }}
             className={`${
               isMini ? 'rounded-lg py-1 px-0.5' : 'rounded-xl py-1.5 px-1'
             } bg-[#11141d] border border-[#c8a45c]/70 flex flex-col items-center justify-center shadow-inner`}
@@ -1374,7 +1520,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
               } font-cinzel font-bold text-[#cbb692] uppercase`}
             >
               <span className={`text-[#d6b265] ${isMini ? 'text-[8px]' : 'text-[10px]'}`}>🦶</span>
-              <span>VEL</span>
+              <span>{currentTarotModsMap['mod_stat_speed']?.label || 'VEL'}</span>
             </div>
             <span
               className={`font-cinzel font-black ${
@@ -1390,6 +1536,11 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
           {/* PP */}
           <div
+            style={{
+              ...getTarotModOffsetStyle('mod_stat_pp'),
+              backgroundColor: currentTarotModsMap['mod_stat_pp']?.bgColor || undefined,
+              borderColor: currentTarotModsMap['mod_stat_pp']?.borderColor || undefined,
+            }}
             className={`${
               isMini ? 'rounded-lg py-1 px-0.5' : 'rounded-xl py-1.5 px-1'
             } bg-[#11141d] border border-[#c8a45c]/70 flex flex-col items-center justify-center shadow-inner`}
@@ -1400,7 +1551,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
               } font-cinzel font-bold text-[#cbb692] uppercase`}
             >
               <Eye className={isMini ? 'w-2.5 h-2.5 text-[#d6b265]' : 'w-3 h-3 text-[#d6b265]'} />
-              <span>PP</span>
+              <span>{currentTarotModsMap['mod_stat_pp']?.label || 'PP'}</span>
             </div>
             <span
               className={`font-cinzel font-black ${
@@ -1415,7 +1566,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
       {/* 4. Customizable Front Health Meter (Bar, Square, Points, Gears, Potion, Hearts) + DM Controls */}
       {showHpOnThisSide && (
-        <div className="space-y-1">
+        <div style={getTarotModOffsetStyle('mod_hp_bar')} className="space-y-1">
           <TarotStyledHpMeter
             styleVariant={tarotCfg.frontHpStyle || 'classic_bar'}
             currentHp={currentHp}
@@ -1460,11 +1611,26 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
         <div className={`grid grid-cols-3 ${isMini ? 'gap-1' : 'gap-1.5 sm:gap-2'}`}>
           {abilityItems.map((st) => {
             const modFormatted = formatModifier(st.mod);
+            const abilityKeyMap: Record<string, string> = {
+              FUE: 'mod_ability_str',
+              DES: 'mod_ability_dex',
+              CON: 'mod_ability_con',
+              INT: 'mod_ability_int',
+              SAB: 'mod_ability_wis',
+              CAR: 'mod_ability_cha',
+            };
+            const modId = abilityKeyMap[st.abbr];
+            const customMod = currentTarotModsMap[modId];
             return (
               <div
                 key={st.abbr}
                 data-testid={`tarot-stat-${st.abbr.toLowerCase()}`}
                 title={`${st.label}: ${st.score} (Bono ${modFormatted})`}
+                style={{
+                  ...getTarotModOffsetStyle(modId),
+                  backgroundColor: customMod?.bgColor || undefined,
+                  borderColor: customMod?.borderColor || undefined,
+                }}
                 className={`group relative cursor-help ${
                   isMini ? 'rounded-lg py-0.5 px-1' : 'rounded-xl py-1.5 px-2'
                 } bg-[#11141d] hover:bg-[#191e2b] border border-[#c8a45c]/70 hover:border-[#f3dfb2] flex flex-col items-center justify-center shadow-inner transition-colors`}
@@ -1483,7 +1649,7 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
                     isMini ? 'text-[8px]' : 'text-[10px] sm:text-xs'
                   } font-cinzel font-bold text-[#d8ba73] uppercase tracking-wider leading-tight`}
                 >
-                  {st.abbr}
+                  {customMod?.label || st.abbr}
                 </span>
                 <span
                   className={`font-cinzel font-black ${
@@ -1500,7 +1666,10 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
 
       {/* 6. Divider + Leather Coin Pouch & 4 Metallic Coins (PO, PP, PC, PL) */}
       {isTarotElementVisibleOnSide('coins', 'front', tarotCfg.elementSides) && (
-        <div className={`${isMini ? 'pt-1' : 'pt-2'} border-t border-[#c8a45c]/35`}>
+        <div
+          style={getTarotModOffsetStyle('mod_coin_gp')}
+          className={`${isMini ? 'pt-1' : 'pt-2'} border-t border-[#c8a45c]/35`}
+        >
           <div
             onClick={onClickCoinPouch}
             className={`flex items-center justify-between ${
@@ -1698,8 +1867,176 @@ export const CharacterTarotCard: React.FC<CharacterTarotCardProps> = ({
         </div>
       )}
 
+      {/* Any extra duplicated/custom modules placed on Front */}
+      {extraSideModules.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1 z-20">
+          {extraSideModules.map((mod) => renderLiveModuleBadge(mod))}
+        </div>
+      )}
+
       {/* Optional Footer Actions (e.g. inside Lobby Character Deck) */}
       {footerActions && <div className="pt-2 border-t border-[#c8a45c]/30">{footerActions}</div>}
     </div>
   );
 };
+
+export interface PlayerTacticalTokenRendererProps {
+  label: string;
+  avatarUrl?: string;
+  color?: string;
+  hp?: number;
+  maxHp?: number;
+  ac?: number;
+  alignment?: string;
+  goldGp?: number;
+  playerSkinId?: string;
+  skinTokens?: AppSkinThemeTokens | null;
+  sizePx?: number;
+}
+
+export const PlayerTacticalTokenRenderer: React.FC<PlayerTacticalTokenRendererProps> = ({
+  label,
+  avatarUrl,
+  color = '#f59e0b',
+  hp,
+  maxHp,
+  ac,
+  alignment,
+  goldGp,
+  playerSkinId,
+  skinTokens,
+  sizePx = 44,
+}) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    return subscribeToSkinCatalogCache(() => setTick((t) => t + 1));
+  }, []);
+
+  const resolvedSkin =
+    skinTokens ||
+    (playerSkinId ? cachedPlayerSkinsMap[playerSkinId] : undefined) ||
+    cachedPlayerSkinsMap['__online_default__'];
+
+  const tarotCfg = React.useMemo(
+    () => resolveTarotStudioConfig(resolvedSkin),
+    [resolvedSkin]
+  );
+
+  const tokenModules = (tarotCfg.modules || []).filter(
+    (m) => m.side === 'token' && m.visible !== false
+  );
+  const extraTokenModules = tokenModules.filter((m) => m.id !== 'mod_token_portrait');
+  const portraitMod = tokenModules.find((m) => m.id === 'mod_token_portrait');
+
+  const shape = portraitMod?.shape || tarotCfg.tokenShape || 'circle';
+  const borderColor =
+    portraitMod?.borderColor || tarotCfg.tokenBorderColor || color || '#c8a45c';
+  const bgColor = portraitMod?.bgColor || tarotCfg.tokenBgColor || '#131722';
+  const hideBorder = portraitMod?.hideBorder ?? tarotCfg.tokenHideBorder ?? false;
+
+  const geomStyle = buildGeometricElementStyle({
+    shape,
+    hideBorder,
+    borderColor,
+    bgColor,
+    borderWidthPx: Math.max(2, Math.min(4, tarotCfg.tokenBorderWidthPx ?? 3)),
+    edgeFadePercent: tarotCfg.tokenEdgeFadePercent || 0,
+  });
+
+  const hpPct =
+    hp !== undefined && maxHp && maxHp > 0
+      ? Math.max(0, Math.min(100, Math.round((hp / maxHp) * 100)))
+      : 100;
+
+  return (
+    <div
+      className="relative w-full h-full flex items-center justify-center select-none overflow-hidden"
+      style={{ width: sizePx, height: sizePx }}
+    >
+      {/* Looping Animated Border GIF inside the square perimeter */}
+      {tarotCfg.tokenAnimatedBorderGifUrl && (
+        <img
+          src={tarotCfg.tokenAnimatedBorderGifUrl}
+          alt=""
+          className="pointer-events-none absolute inset-0 w-full h-full object-contain z-20"
+        />
+      )}
+      {tarotCfg.tokenCustomFramePngUrl && (
+        <img
+          src={tarotCfg.tokenCustomFramePngUrl}
+          alt=""
+          className="pointer-events-none absolute inset-0 w-full h-full object-contain z-20"
+        />
+      )}
+
+      {/* Main Token Body (Default Circular Character Image or Custom Geometric Shape) */}
+      <div
+        style={geomStyle}
+        className="relative w-[86%] h-[86%] flex items-center justify-center overflow-hidden shadow-[0_4px_12px_rgba(0,0,0,0.85)]"
+      >
+        <GeometricSvgBorder
+          shape={shape}
+          borderColor={borderColor}
+          borderWidthPx={2}
+          hideBorder={hideBorder}
+        />
+        {avatarUrl ? (
+          <img
+            src={avatarUrl}
+            alt={label}
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <span className="font-cinzel font-black text-white text-xs uppercase drop-shadow">
+            {(label || 'PJ').slice(0, 2)}
+          </span>
+        )}
+      </div>
+
+      {/* Extra Modules copied from Tarot Card to Token in Apartado 4 (HP, Gold, CA, Alignment) */}
+      {extraTokenModules.length > 0 && (
+        <div className="pointer-events-none absolute inset-x-0.5 bottom-0.5 z-30 flex flex-col items-center gap-0.5">
+          {extraTokenModules.slice(0, 2).map((mod) => {
+            if (mod.kind === 'hp_bar' || (hp !== undefined && maxHp !== undefined && mod.id.includes('hp'))) {
+              return (
+                <div
+                  key={mod.id}
+                  className="w-[92%] h-2.5 rounded-full bg-black/90 border border-emerald-500/70 overflow-hidden relative flex items-center justify-center"
+                >
+                  <div
+                    className="h-full transition-all"
+                    style={{
+                      width: `${hpPct}%`,
+                      backgroundColor: mod.fillColor || '#22b573',
+                    }}
+                  />
+                  <span className="absolute inset-0 flex items-center justify-center text-[7px] font-mono font-black text-white leading-none">
+                    {hp ?? 44}/{maxHp ?? 44}
+                  </span>
+                </div>
+              );
+            }
+            let badgeText = mod.exampleValue || mod.label || '';
+            if (mod.kind === 'coin_gp') badgeText = `${goldGp ?? 125} PO`;
+            else if (mod.kind === 'stat_ca') badgeText = `CA ${ac ?? 16}`;
+            else if (mod.kind === 'alignment_badge') badgeText = alignment || 'LB';
+            return (
+              <div
+                key={mod.id}
+                style={{
+                  backgroundColor: mod.bgColor || 'rgba(15,19,28,0.92)',
+                  borderColor: mod.borderColor || '#c8a45c',
+                  color: mod.textColor || '#fde68a',
+                }}
+                className="px-1 py-0.2 rounded border text-[7px] font-mono font-black leading-tight truncate max-w-[94%]"
+              >
+                {badgeText}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
