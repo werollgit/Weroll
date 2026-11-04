@@ -50,6 +50,9 @@ import {
   ZoneMapRecord,
   VisualQueueItem,
   TacticalMapToken,
+  TacticalMapConfig,
+  TacticalLayerId,
+  AppSkinRecord,
 } from '../../types/dnd';
 import {
   calculateModifier,
@@ -78,6 +81,20 @@ import {
   pickMostRecentRoll,
   pickMostRecentRollForRoller,
 } from '../../utils/dnd-math';
+import {
+  resolvePlayerMapLayout,
+  buildSpatialBlockInlineStyle,
+  buildInnerButtonInlineStyle,
+  getInnerButtonLabel,
+} from '../../utils/playerSkinLayout';
+import {
+  canAccessTacticalMaps,
+  createDefaultTacticalMapConfig,
+  isTokenOwnedByPlayer,
+  modifyTacticalTokenLive,
+} from '../../utils/tacticalMapEngine';
+import { TacticalMapCanvas } from '../tactical/TacticalMapCanvas';
+import { TacticalMapStudioModal } from '../tactical/TacticalMapStudioModal';
 import { CharacterTarotCard } from '../character/CharacterTarotCard';
 import { ABILITY_LABELS, SKILL_METADATA, SKILLS_5E } from '../../data/srd';
 import { getFolderDepth } from '../../utils/storage';
@@ -88,6 +105,7 @@ interface TableMapViewProps {
   mode: 'player' | 'dm';
   roomCode: string;
   worldName?: string;
+  currentUserRole?: 'client' | 'moderator' | 'creator' | 'admin' | string | null;
   // Player props
   character?: Character5e;
   onUpdateCharacter?: (updated: Character5e) => void;
@@ -187,6 +205,7 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
   mode,
   roomCode,
   worldName = 'Reinos Olvidados',
+  currentUserRole = 'client',
   character,
   onUpdateCharacter,
   workspace,
@@ -207,6 +226,68 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
   onReturnToSheet,
   onSaveToCloud,
 }) => {
+  const isTacticalMapsAllowed = canAccessTacticalMaps(currentUserRole);
+  const [isTacticalStudioOpen, setIsTacticalStudioOpen] = useState<boolean>(false);
+
+  // Load Player & DM Skins from catalog so Map Mode reflects custom layouts and colors
+  const [catalogPlayerSkins, setCatalogPlayerSkins] = useState<AppSkinRecord[]>([]);
+  const [catalogDmSkins, setCatalogDmSkins] = useState<AppSkinRecord[]>([]);
+  const [onlineDefaultPlayerSkinId, setOnlineDefaultPlayerSkinId] = useState<string>('skin-player-classic-gold');
+  const [onlineDefaultDmSkinId, setOnlineDefaultDmSkinId] = useState<string>('skin-dm-crimson-overlord');
+
+  React.useEffect(() => {
+    let mounted = true;
+    fetch('/api/creator/catalog')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!mounted) return;
+        const pSkins: AppSkinRecord[] = [];
+        const dSkins: AppSkinRecord[] = [];
+        if (Array.isArray(data.playerSkins)) pSkins.push(...data.playerSkins);
+        if (Array.isArray(data.dmSkins)) dSkins.push(...data.dmSkins);
+        if (Array.isArray(data.skins)) {
+          for (const s of data.skins) {
+            if (s.scope === 'player' && !pSkins.some((p) => p.id === s.id)) pSkins.push(s);
+            if (s.scope === 'dm' && !dSkins.some((d) => d.id === s.id)) dSkins.push(s);
+          }
+        }
+        setCatalogPlayerSkins(pSkins);
+        setCatalogDmSkins(dSkins);
+        if (data.activeOnlinePlayerSkinId) setOnlineDefaultPlayerSkinId(data.activeOnlinePlayerSkinId);
+        if (data.activeOnlineDmSkinId) setOnlineDefaultDmSkinId(data.activeOnlineDmSkinId);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const activePlayerSkinRecord = useMemo(() => {
+    const targetId = character?.playerSkinId || onlineDefaultPlayerSkinId;
+    return (
+      catalogPlayerSkins.find((s) => s.id === targetId) ||
+      catalogPlayerSkins.find((s) => s.id === onlineDefaultPlayerSkinId) ||
+      null
+    );
+  }, [character?.playerSkinId, catalogPlayerSkins, onlineDefaultPlayerSkinId]);
+
+  const activePlayerSkinTokens = activePlayerSkinRecord?.themeTokens || null;
+  const resolvedPlayerMap = useMemo(
+    () => resolvePlayerMapLayout(activePlayerSkinTokens),
+    [activePlayerSkinTokens]
+  );
+
+  const activeDmSkinRecord = useMemo(() => {
+    const targetId = workspace?.dmSkinId || onlineDefaultDmSkinId;
+    return (
+      catalogDmSkins.find((s) => s.id === targetId) ||
+      catalogDmSkins.find((s) => s.id === onlineDefaultDmSkinId) ||
+      null
+    );
+  }, [workspace?.dmSkinId, catalogDmSkins, onlineDefaultDmSkinId]);
+
+  const activeDmSkinTokens = activeDmSkinRecord?.themeTokens || null;
+
   // =========================================================================
   // 1. MINIMIZABLE OVERLAYS STATE (CARDS / PROJECTION & NOTEBOOK)
   // =========================================================================
@@ -433,7 +514,9 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
 
   const filteredTacticalMaps = useMemo(() => {
     if (mode === 'dm' && workspace) {
-      const allT = (workspace.locations || []).filter((l) => Boolean(l.mapImageUrl));
+      const allT = (workspace.locations || []).filter(
+        (l) => Boolean(l.mapImageUrl) || Boolean(l.tacticalConfig)
+      );
       if (selectedFolder === 'all') return allT;
       return allT.filter(
         (l) => l.folder === selectedFolder || l.folder.startsWith(`${selectedFolder} / `)
@@ -493,7 +576,7 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
       const liveFolder = workspace.activeLiveVisual?.folder || 'all';
       if (
         workspace.activeLiveVisual &&
-        workspace.activeLiveVisual.imageUrl &&
+        (workspace.activeLiveVisual.imageUrl || workspace.activeLiveVisual.kind === 'tactical') &&
         liveFolder === selectedFolder
       ) {
         return {
@@ -536,10 +619,17 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
       ? buildLiveProjectionFromWorkspace(workspace, worldName)
       : undefined;
 
-    if (liveProjection && liveProjection.visualImageUrl) {
+    if (
+      liveProjection &&
+      (liveProjection.visualImageUrl ||
+        liveProjection.visualKind === 'tactical' ||
+        liveProjection.tacticalConfig)
+    ) {
       return {
-        id: 'live-proj',
-        kind: liveProjection.visualKind || 'map',
+        id: liveProjection.visualId || 'live-proj',
+        kind: liveProjection.tacticalConfig
+          ? ('tactical' as const)
+          : liveProjection.visualKind || 'map',
         title:
           liveProjection.visualTitle ||
           liveProjection.locationName ||
@@ -548,10 +638,17 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
       };
     }
 
-    if (fallbackProj && fallbackProj.visualImageUrl) {
+    if (
+      fallbackProj &&
+      (fallbackProj.visualImageUrl ||
+        fallbackProj.visualKind === 'tactical' ||
+        fallbackProj.tacticalConfig)
+    ) {
       return {
-        id: 'ws-fallback-proj',
-        kind: fallbackProj.visualKind || 'map',
+        id: fallbackProj.visualId || 'ws-fallback-proj',
+        kind: fallbackProj.tacticalConfig
+          ? ('tactical' as const)
+          : fallbackProj.visualKind || 'map',
         title: fallbackProj.visualTitle || fallbackProj.locationName || 'Escena Actual',
         imageUrl: fallbackProj.visualImageUrl,
       };
@@ -578,7 +675,7 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
         currentPlaceShortName,
       imageUrl: '',
     };
-  }, [mode, workspace, worldName, currentPlaceMapUrl, filteredAlbumPhotos, selectedFolder, currentPlaceShortName, liveProjection]);
+  }, [mode, workspace, worldName, currentPlaceMapUrl, filteredAlbumPhotos, selectedFolder, currentPlaceShortName, liveProjection, dmViewportMode, dmInspectedVisual, liveProjectedToPlayers]);
 
   // =========================================================================
   // 3. PARTY PLAYER CARDS (SAME DESIGN AS PLAYER SHEET BOTTOM-RIGHT CARD)
@@ -1128,20 +1225,523 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
   const activeTacticalLocation = useMemo(() => {
     if (activeVisual.kind !== 'tactical') return null;
     if (workspace) {
-      const byId = (workspace.locations || []).find((l) => l.id === activeVisual.id);
+      const byId = (workspace.locations || []).find(
+        (l) =>
+          l.id === activeVisual.id ||
+          `tactical-${l.tacticalConfig?.id}` === activeVisual.id ||
+          `loc-tactical-${l.tacticalConfig?.id}` === l.id
+      );
       if (byId) return byId;
-      const byUrl = (workspace.locations || []).find((l) => l.mapImageUrl === activeVisual.imageUrl);
+      const byUrl = (workspace.locations || []).find(
+        (l) => l.mapImageUrl && l.mapImageUrl === activeVisual.imageUrl
+      );
       if (byUrl) return byUrl;
     }
     return null;
   }, [activeVisual, workspace]);
 
+  const [localPlayerTacticalConfig, setLocalPlayerTacticalConfig] =
+    useState<TacticalMapConfig | null>(null);
+
+  const activeTacticalConfig: TacticalMapConfig | null = useMemo(() => {
+    const raw =
+      activeTacticalLocation?.tacticalConfig ||
+      workspace?.activeLiveVisual?.tacticalConfig ||
+      liveProjection?.tacticalConfig ||
+      localPlayerTacticalConfig ||
+      null;
+    return raw;
+  }, [
+    activeTacticalLocation,
+    workspace?.activeLiveVisual?.tacticalConfig,
+    liveProjection?.tacticalConfig,
+    localPlayerTacticalConfig,
+  ]);
+
+  const handleSaveTacticalMapFromTable = (
+    tacticalCfg: TacticalMapConfig,
+    existingLocationId?: string
+  ) => {
+    if (!workspace || !onUpdateWorkspace) return;
+    const folderTarget = selectedFolder !== 'all' ? selectedFolder : 'General';
+    const existingLoc = existingLocationId
+      ? (workspace.locations || []).find((l) => l.id === existingLocationId)
+      : (workspace.locations || []).find(
+          (l) => l.tacticalConfig?.id === tacticalCfg.id || l.name === tacticalCfg.name
+        );
+
+    const locId = existingLoc ? existingLoc.id : `loc-tactical-${tacticalCfg.id}`;
+    const updatedLoc: LocationRecord = existingLoc
+      ? {
+          ...existingLoc,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || existingLoc.mapImageUrl,
+          gridCols: tacticalCfg.gridCols,
+          gridRows: tacticalCfg.gridRows,
+          tacticalConfig: tacticalCfg,
+        }
+      : {
+          id: locId,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          region: currentPlaceShortName || 'General',
+          type: 'Mapa Táctico',
+          description: `Mapa táctico (${tacticalCfg.gridCols}x${tacticalCfg.gridRows})`,
+          secretsForDm: '',
+          notes: '',
+          evolution: '',
+          pointsOfInterest: [],
+          folder: folderTarget,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || '',
+          gridCols: tacticalCfg.gridCols,
+          gridRows: tacticalCfg.gridRows,
+          tacticalConfig: tacticalCfg,
+        };
+
+    const nextLocations = existingLoc
+      ? (workspace.locations || []).map((l) => (l.id === existingLoc.id ? updatedLoc : l))
+      : [updatedLoc, ...(workspace.locations || [])];
+
+    onUpdateWorkspace({
+      ...workspace,
+      locations: nextLocations,
+    });
+  };
+
+  const handleProjectTacticalMapFromTable = (tacticalCfg: TacticalMapConfig) => {
+    setLocalPlayerTacticalConfig(tacticalCfg);
+    if (!workspace || !onUpdateWorkspace) return;
+    const folderTarget = selectedFolder !== 'all' ? selectedFolder : 'General';
+    const existingLoc = (workspace.locations || []).find(
+      (l) => l.tacticalConfig?.id === tacticalCfg.id || l.name === tacticalCfg.name
+    );
+    const locId = existingLoc ? existingLoc.id : `loc-tactical-${tacticalCfg.id}`;
+    const updatedLoc: LocationRecord = existingLoc
+      ? {
+          ...existingLoc,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || existingLoc.mapImageUrl,
+          gridCols: tacticalCfg.gridCols,
+          gridRows: tacticalCfg.gridRows,
+          tacticalConfig: tacticalCfg,
+        }
+      : {
+          id: locId,
+          name: tacticalCfg.name,
+          title: tacticalCfg.name,
+          region: currentPlaceShortName || 'General',
+          type: 'Mapa Táctico',
+          description: `Mapa táctico (${tacticalCfg.gridCols}x${tacticalCfg.gridRows})`,
+          secretsForDm: '',
+          notes: '',
+          evolution: '',
+          pointsOfInterest: [],
+          folder: folderTarget,
+          mapImageUrl: tacticalCfg.layers[0]?.bgImageUrl || '',
+          gridCols: tacticalCfg.gridCols,
+          gridRows: tacticalCfg.gridRows,
+          tacticalConfig: tacticalCfg,
+        };
+    const nextLocations = existingLoc
+      ? (workspace.locations || []).map((l) => (l.id === existingLoc.id ? updatedLoc : l))
+      : [updatedLoc, ...(workspace.locations || [])];
+
+    const liveVisual = {
+      kind: 'tactical' as const,
+      id: `tactical-${tacticalCfg.id}`,
+      title: tacticalCfg.name,
+      imageUrl: tacticalCfg.layers[0]?.bgImageUrl || '',
+      folder: folderTarget,
+      gridCols: tacticalCfg.gridCols,
+      gridRows: tacticalCfg.gridRows,
+      tacticalConfig: tacticalCfg,
+    };
+    setDmInspectedVisual({
+      kind: 'tactical',
+      id: liveVisual.id,
+      title: liveVisual.title,
+      imageUrl: liveVisual.imageUrl,
+      folder: folderTarget,
+    });
+    onUpdateWorkspace({
+      ...workspace,
+      locations: nextLocations,
+      activeLocationId: locId,
+      dmPreviewVisual: liveVisual,
+      activeLiveVisual: liveVisual,
+    });
+  };
+
+  const tacticalCharactersById = useMemo(() => {
+    const map: Record<string, Character5e> = {};
+    for (const p of resolvedPlayerCards) {
+      map[p.characterId] = {
+        id: p.characterId,
+        name: p.characterName,
+        playerName: p.playerName,
+        race: p.race || 'Humano',
+        characterClass: p.characterClass || 'Guerrero',
+        subclass: '',
+        level: p.level || 1,
+        xp: p.experience || 0,
+        experience: p.experience || 0,
+        background: '',
+        alignment: p.alignment || 'Neutral Bueno',
+        avatarType: p.avatarType,
+        avatarCustomUrl: p.avatarCustomUrl || p.avatarUrl,
+        avatarIcon: p.avatarIcon,
+        avatarUrl: p.avatarCustomUrl || p.avatarUrl,
+        currentHp: p.currentHp,
+        hpCurrent: p.currentHp,
+        maxHp: p.maxHp,
+        hpMax: p.maxHp,
+        tempHp: 0,
+        armorClass: p.ac,
+        ac: p.ac,
+        initiativeBonus: p.initiative || 0,
+        speed: p.speed || 30,
+        hitDiceTotal: `${p.level || 1}d10`,
+        hitDiceRemaining: p.level || 1,
+        deathSaves: { successes: 0, failures: 0 },
+        abilities: {
+          str: { score: p.abilities?.str ?? 10, saveProficient: false },
+          dex: { score: p.abilities?.dex ?? 10, saveProficient: false },
+          con: { score: p.abilities?.con ?? 10, saveProficient: false },
+          int: { score: p.abilities?.int ?? 10, saveProficient: false },
+          wis: { score: p.abilities?.wis ?? 10, saveProficient: false },
+          cha: { score: p.abilities?.cha ?? 10, saveProficient: false },
+        },
+        skills: {} as any,
+        attacks: [],
+        spells: [],
+        inventory: [],
+        currency: p.currency || { cp: 0, sp: 0, ep: 0, gp: 100, pp: 0 },
+        coins: p.currency || { cp: 0, sp: 0, ep: 0, gp: 100, pp: 0 },
+        proficienciesAndLanguages: '',
+        featuresAndTraits: [],
+        backstory: '',
+        alliesAndOrganizations: '',
+        treasureNotes: '',
+      };
+    }
+    if (character) {
+      map[character.id] = character;
+    }
+    return map;
+  }, [resolvedPlayerCards, character]);
+
+  const applyUpdatedTacticalConfigToWorkspace = (nextConfig: TacticalMapConfig) => {
+    setLocalPlayerTacticalConfig(nextConfig);
+    if (workspace && onUpdateWorkspace) {
+      const nextLocations = (workspace.locations || []).map((loc) =>
+        loc.tacticalConfig?.id === nextConfig.id
+          ? { ...loc, tacticalConfig: nextConfig }
+          : loc
+      );
+      const nextLiveVisual =
+        workspace.activeLiveVisual?.tacticalConfig?.id === nextConfig.id ||
+        workspace.activeLiveVisual?.kind === 'tactical'
+          ? {
+              ...workspace.activeLiveVisual,
+              kind: 'tactical' as const,
+              tacticalConfig: nextConfig,
+            }
+          : workspace.activeLiveVisual;
+      onUpdateWorkspace({
+        ...workspace,
+        locations: nextLocations,
+        activeLiveVisual: nextLiveVisual,
+      });
+    }
+  };
+
+  const syncTacticalActionToServer = (payload: {
+    action: 'move' | 'modify' | 'delete' | 'replace_config';
+    tokenId?: string;
+    targetCol?: number;
+    targetRow?: number;
+    newLayerId?: TacticalLayerId;
+    patch?: Partial<TacticalMapToken>;
+    tacticalConfig?: TacticalMapConfig;
+  }) => {
+    if (!roomCode) return;
+    fetch(`/api/session/room/${encodeURIComponent(roomCode)}/tactical-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actorMode: mode,
+        actorCharacterId: character?.id,
+        ...payload,
+      }),
+    }).catch(() => {});
+  };
+
+  const handleTacticalCanvasTokenMove = (
+    tokenId: string,
+    targetCol: number,
+    targetRow: number,
+    newLayerId: TacticalLayerId
+  ) => {
+    if (!activeTacticalConfig) return;
+    const targetToken = activeTacticalConfig.tokens.find((t) => t.id === tokenId);
+    if (!targetToken) return;
+
+    // Enforce strict player ownership on move
+    if (mode === 'player' && !isTokenOwnedByPlayer(targetToken, character?.id)) {
+      return;
+    }
+
+    const nextConfig: TacticalMapConfig = {
+      ...activeTacticalConfig,
+      tokens: activeTacticalConfig.tokens.map((t) =>
+        t.id === tokenId
+          ? { ...t, col: targetCol, row: targetRow, layerId: newLayerId }
+          : t
+      ),
+    };
+    applyUpdatedTacticalConfigToWorkspace(nextConfig);
+    syncTacticalActionToServer({
+      action: 'move',
+      tokenId,
+      targetCol,
+      targetRow,
+      newLayerId,
+      tacticalConfig: nextConfig,
+    });
+  };
+
+  const handleDmModifyTacticalToken = (
+    tokenId: string,
+    patch: Partial<TacticalMapToken>
+  ) => {
+    if (mode !== 'dm' || !activeTacticalConfig) return;
+    const modRes = modifyTacticalTokenLive({
+      config: activeTacticalConfig,
+      tokenId,
+      patch,
+      actorMode: mode,
+      actorCharacterId: character?.id,
+    });
+    if (!modRes.allowed || !modRes.updatedToken) return;
+
+    const updatedTok = modRes.updatedToken;
+
+    // Update workspace & local state
+    setLocalPlayerTacticalConfig(modRes.config);
+    if (workspace && onUpdateWorkspace) {
+      const nextLocations = (workspace.locations || []).map((loc) =>
+        loc.tacticalConfig?.id === modRes.config.id
+          ? { ...loc, tacticalConfig: modRes.config }
+          : loc
+      );
+      const nextLiveVisual =
+        workspace.activeLiveVisual?.tacticalConfig?.id === modRes.config.id ||
+        workspace.activeLiveVisual?.kind === 'tactical'
+          ? {
+              ...workspace.activeLiveVisual,
+              kind: 'tactical' as const,
+              tacticalConfig: modRes.config,
+            }
+          : workspace.activeLiveVisual;
+
+      // If this is an enemy token and HP/AC/Name changed, also sync activeEncounter combatants if matching
+      let nextEncounter = workspace.activeEncounter;
+      if (
+        (updatedTok.tokenType === 'enemy' || updatedTok.kind === 'enemy') &&
+        workspace.activeEncounter
+      ) {
+        const nextCombatants = (workspace.activeEncounter.combatants || []).map((c) => {
+          if (
+            c.id === updatedTok.id ||
+            (updatedTok.monsterId && c.sourceId === updatedTok.monsterId) ||
+            c.name.toLowerCase() === (updatedTok.name || '').toLowerCase()
+          ) {
+            return {
+              ...c,
+              name: updatedTok.name || c.name,
+              hp: updatedTok.hpCurrent ?? updatedTok.hp ?? c.hp,
+              maxHp: updatedTok.hpMax ?? updatedTok.maxHp ?? c.maxHp,
+              ac: updatedTok.ac ?? c.ac,
+            };
+          }
+          return c;
+        });
+        nextEncounter = {
+          ...workspace.activeEncounter,
+          combatants: nextCombatants,
+        };
+      }
+
+      onUpdateWorkspace({
+        ...workspace,
+        locations: nextLocations,
+        activeLiveVisual: nextLiveVisual,
+        activeEncounter: nextEncounter,
+      });
+    }
+
+    // If this is a player token and HP was modified by DM, also sync to the live player sheet in room!
+    if (
+      (updatedTok.tokenType === 'player' || updatedTok.kind === 'player') &&
+      updatedTok.characterId &&
+      (patch.hpCurrent !== undefined || patch.hp !== undefined)
+    ) {
+      const nextHpVal = updatedTok.hpCurrent ?? updatedTok.hp ?? 0;
+      const prevPlayer = resolvedPlayerCards.find(
+        (p) => p.characterId === updatedTok.characterId
+      );
+      if (prevPlayer && onDmAdjustPlayer) {
+        const delta = nextHpVal - prevPlayer.currentHp;
+        if (delta !== 0) {
+          onDmAdjustPlayer(updatedTok.characterId, { hpDelta: delta });
+        }
+      }
+      if (roomCode) {
+        fetch(`/api/session/room/${encodeURIComponent(roomCode)}/dm-adjust-player`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            characterId: updatedTok.characterId,
+            setHp: nextHpVal,
+          }),
+        }).catch(() => {});
+      }
+    }
+
+    syncTacticalActionToServer({
+      action: 'modify',
+      tokenId,
+      patch,
+      tacticalConfig: modRes.config,
+    });
+  };
+
+  const handleDmDeleteTacticalToken = (tokenId: string) => {
+    if (mode !== 'dm' || !activeTacticalConfig) return;
+    const nextConfig: TacticalMapConfig = {
+      ...activeTacticalConfig,
+      tokens: activeTacticalConfig.tokens.filter((t) => t.id !== tokenId),
+    };
+    applyUpdatedTacticalConfigToWorkspace(nextConfig);
+    syncTacticalActionToServer({
+      action: 'delete',
+      tokenId,
+      tacticalConfig: nextConfig,
+    });
+  };
+
+  const handleDmAddPlayersToRichTacticalMap = () => {
+    if (mode !== 'dm' || !activeTacticalConfig) return;
+    const existingTokens = [...activeTacticalConfig.tokens];
+    const sourcePlayers =
+      resolvedPlayerCards.length > 0
+        ? resolvedPlayerCards
+        : [
+            {
+              characterId: 'sample-valeros',
+              characterName: 'Valeros del Alba',
+              playerName: 'Jugador',
+              currentHp: 28,
+              maxHp: 28,
+              ac: 18,
+              passivePerception: 12,
+              level: 3,
+              characterClass: 'Humano Guerrero',
+              lastPing: Date.now(),
+            } as PartyMemberLive,
+          ];
+
+    sourcePlayers.forEach((p, idx) => {
+      const alreadyExists = existingTokens.some(
+        (t) =>
+          t.characterId === p.characterId ||
+          t.id === `tok-player-${p.characterId}` ||
+          t.id === `token-player-${p.characterId}`
+      );
+      if (!alreadyExists) {
+        existingTokens.push({
+          id: `tok-player-${p.characterId}`,
+          name: p.characterName,
+          label: p.characterName,
+          tokenType: 'player',
+          kind: 'player',
+          characterId: p.characterId,
+          imageUrl: p.avatarCustomUrl || p.avatarUrl,
+          avatarUrl: p.avatarCustomUrl || p.avatarUrl,
+          col: Math.min(activeTacticalConfig.gridCols - 2, 1 + (idx % 4) * 2),
+          row: Math.min(activeTacticalConfig.gridRows - 2, 1 + Math.floor(idx / 4) * 2),
+          layerId: 2,
+          hpCurrent: p.currentHp,
+          hp: p.currentHp,
+          hpMax: p.maxHp,
+          maxHp: p.maxHp,
+          ac: p.ac,
+        });
+      }
+    });
+
+    const nextConfig: TacticalMapConfig = {
+      ...activeTacticalConfig,
+      tokens: existingTokens,
+    };
+    applyUpdatedTacticalConfigToWorkspace(nextConfig);
+    syncTacticalActionToServer({
+      action: 'replace_config',
+      tacticalConfig: nextConfig,
+    });
+  };
+
+  const handleDmAddMonsterToRichTacticalMap = () => {
+    if (mode !== 'dm' || !activeTacticalConfig) return;
+    const existingTokens = [...activeTacticalConfig.tokens];
+    const enemyCount = existingTokens.filter(
+      (t) => t.tokenType === 'enemy' || t.kind === 'enemy'
+    ).length;
+    const firstMon = workspace?.monsters?.[enemyCount % Math.max(1, workspace?.monsters?.length || 1)];
+    const newTok: TacticalMapToken = {
+      id: `tok-enemy-${Date.now().toString().slice(-5)}`,
+      name: firstMon ? `${firstMon.name} ${enemyCount + 1}` : `Trasgo ${enemyCount + 1}`,
+      label: firstMon ? `${firstMon.name} ${enemyCount + 1}` : `Trasgo ${enemyCount + 1}`,
+      tokenType: 'enemy',
+      kind: 'enemy',
+      monsterId: firstMon?.id,
+      imageUrl: firstMon?.avatarCustomUrl || firstMon?.avatarUrl,
+      col: Math.min(
+        activeTacticalConfig.gridCols - 1,
+        Math.floor(activeTacticalConfig.gridCols / 2) + (enemyCount % 3)
+      ),
+      row: Math.min(
+        activeTacticalConfig.gridRows - 1,
+        Math.floor(activeTacticalConfig.gridRows / 2)
+      ),
+      layerId: 2,
+      hpCurrent: firstMon?.maxHp || 18,
+      hp: firstMon?.maxHp || 18,
+      hpMax: firstMon?.maxHp || 18,
+      maxHp: firstMon?.maxHp || 18,
+      ac: firstMon?.ac || 14,
+    };
+    const nextConfig: TacticalMapConfig = {
+      ...activeTacticalConfig,
+      tokens: [...existingTokens, newTok],
+    };
+    applyUpdatedTacticalConfigToWorkspace(nextConfig);
+    syncTacticalActionToServer({
+      action: 'replace_config',
+      tacticalConfig: nextConfig,
+    });
+  };
+
   const activeTacticalGridCols =
+    activeTacticalConfig?.gridCols ||
     activeTacticalLocation?.gridCols ||
     workspace?.activeLiveVisual?.gridCols ||
     liveProjection?.tacticalGridCols ||
     10;
   const activeTacticalGridRows =
+    activeTacticalConfig?.gridRows ||
     activeTacticalLocation?.gridRows ||
     workspace?.activeLiveVisual?.gridRows ||
     liveProjection?.tacticalGridRows ||
@@ -1153,7 +1753,14 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
     [];
 
   const handleMoveTokenOnActiveTacticalMap = (col: number, row: number) => {
-    if (mode !== 'dm' || !selectedTacticalTokenId || !workspace || !onUpdateWorkspace) return;
+    if (!selectedTacticalTokenId) return;
+    const selectedTok = activeTacticalTokens.find((t) => t.id === selectedTacticalTokenId);
+    if (!selectedTok) return;
+    // In player mode, player can only move their own token
+    if (mode === 'player' && !isTokenOwnedByPlayer(selectedTok, character?.id)) {
+      return;
+    }
+
     const nextTokens = moveTacticalTokenOnGrid(
       activeTacticalTokens,
       selectedTacticalTokenId,
@@ -1162,25 +1769,28 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
       activeTacticalGridCols,
       activeTacticalGridRows
     );
-    const targetId = activeTacticalLocation?.id || activeVisual.id;
-    const nextLocations = (workspace.locations || []).map((loc) =>
-      loc.id === targetId ? { ...loc, tokens: nextTokens } : loc
-    );
-    const isCurrentlyLive =
-      workspace.activeLiveVisual?.kind === 'tactical' &&
-      (workspace.activeLiveVisual?.id === targetId ||
-        workspace.activeLiveVisual?.imageUrl === activeVisual.imageUrl);
+    if (workspace && onUpdateWorkspace) {
+      const targetId = activeTacticalLocation?.id || activeVisual.id;
+      const nextLocations = (workspace.locations || []).map((loc) =>
+        loc.id === targetId ? { ...loc, tokens: nextTokens } : loc
+      );
+      const isCurrentlyLive =
+        workspace.activeLiveVisual?.kind === 'tactical' &&
+        (workspace.activeLiveVisual?.id === targetId ||
+          workspace.activeLiveVisual?.imageUrl === activeVisual.imageUrl);
 
-    onUpdateWorkspace({
-      ...workspace,
-      locations: nextLocations,
-      activeLiveVisual: isCurrentlyLive && workspace.activeLiveVisual
-        ? {
-            ...workspace.activeLiveVisual,
-            tacticalTokens: nextTokens,
-          }
-        : workspace.activeLiveVisual,
-    });
+      onUpdateWorkspace({
+        ...workspace,
+        locations: nextLocations,
+        activeLiveVisual:
+          isCurrentlyLive && workspace.activeLiveVisual
+            ? {
+                ...workspace.activeLiveVisual,
+                tacticalTokens: nextTokens,
+              }
+            : workspace.activeLiveVisual,
+      });
+    }
   };
 
   const handlePopulatePlayersOnTacticalMap = () => {
@@ -1426,8 +2036,30 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
 
   return (
     <div
-      className="w-full max-w-[1920px] mx-auto px-1 sm:px-2.5 py-2 text-stone-200 select-none space-y-2.5"
+      className="w-full max-w-[1920px] mx-auto px-1 sm:px-2.5 py-2 text-stone-200 select-none flex flex-col gap-2.5 rounded-2xl transition-colors"
       data-testid="table-map-view"
+      data-player-skin-id={mode === 'player' ? activePlayerSkinRecord?.id || 'default' : undefined}
+      data-dm-skin-id={mode === 'dm' ? activeDmSkinRecord?.id || 'default' : undefined}
+      style={
+        mode === 'dm'
+          ? {
+              backgroundColor: activeDmSkinTokens?.dmScreenBgColor || undefined,
+              backgroundImage: activeDmSkinTokens?.dmScreenCustomBgTextureUrl
+                ? `url(${activeDmSkinTokens.dmScreenCustomBgTextureUrl})`
+                : undefined,
+              backgroundSize: 'cover',
+            }
+          : {
+              backgroundColor:
+                resolvedPlayerMap.wallpaperColor ||
+                activePlayerSkinTokens?.playerSheetBgColor ||
+                undefined,
+              backgroundImage: resolvedPlayerMap.wallpaperUrl
+                ? `url(${resolvedPlayerMap.wallpaperUrl})`
+                : undefined,
+              backgroundSize: 'cover',
+            }
+      }
     >
       {/* =================================================================== */}
       {/* MAIN 2-COLUMN TABLETOP MAP GRID (Full Left Expansion + Right Column) */}
@@ -1581,7 +2213,20 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
           )}
 
           {/* MAIN MAP / SCENE CANVAS CONTAINER */}
-          <div className="relative flex-1 min-h-[650px] rounded-2xl bg-[#11131a] border-2 border-[#c8a45c]/80 overflow-hidden shadow-[0_0_35px_rgba(0,0,0,0.9)] flex flex-col justify-between">
+          <div
+            data-testid="map-center-canvas-block"
+            className="relative flex-1 min-h-[650px] rounded-2xl bg-[#11131a] border-2 border-[#c8a45c]/80 overflow-hidden shadow-[0_0_35px_rgba(0,0,0,0.9)] flex flex-col justify-between"
+            style={
+              mode === 'player'
+                ? buildSpatialBlockInlineStyle(resolvedPlayerMap.blocks.map_center_canvas)
+                : {
+                    borderColor:
+                      activeDmSkinTokens?.dmMapCanvasBorder ||
+                      activeDmSkinTokens?.dmScreenBaseBorder ||
+                      undefined,
+                  }
+            }
+          >
             {/* Top Bar Inside Map Viewport: DM/Live Mode Toggle + Proyectar a Jugadores + Zoom Controls */}
             <div className="relative z-20 px-3.5 py-2 flex items-center justify-between gap-2 pointer-events-none flex-wrap">
               <div className="flex items-center gap-2 flex-wrap max-w-[84%] pointer-events-auto">
@@ -1689,7 +2334,10 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
             {/* Center Map / Gallery / Interactive Tactical Grid Layer */}
             <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-[#0d0e14]">
               {/* Top-Left Return to Parent Place Button Inside Map Drawing (DM Mode) */}
-              {mode === 'dm' && dmViewportMode === 'dm' && selectedFolder !== 'all' && (
+              {mode === 'dm' &&
+                dmViewportMode === 'dm' &&
+                selectedFolder !== 'all' &&
+                activeVisual.kind !== 'tactical' && (
                 <button
                   type="button"
                   data-testid="btn-map-canvas-return-parent"
@@ -1743,100 +2391,157 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
               {activeVisual.kind === 'tactical' && (
                 <div
                   data-testid="tactical-map-grid-overlay"
-                  className="absolute inset-0 z-10 flex flex-col justify-between pointer-events-auto"
+                  className="absolute inset-0 z-10 flex flex-col items-center justify-start overflow-auto pt-14 px-4 pb-4 pointer-events-auto bg-[#07090e]/95"
                 >
-                  {/* DM Tactical Token Toolbar */}
-                  {mode === 'dm' && (
-                    <div className="mt-12 mx-auto px-3 py-1.5 rounded-xl bg-black/85 border border-red-500/70 flex items-center gap-2 flex-wrap shadow-2xl z-20">
-                      <span className="text-[10px] font-cinzel font-bold text-red-300 uppercase">
-                        ⚔️ Cuadrícula Táctica ({activeTacticalGridCols}x{activeTacticalGridRows}):
-                      </span>
-                      <button
-                        type="button"
-                        data-testid="btn-tactical-populate-players"
-                        onClick={handlePopulatePlayersOnTacticalMap}
-                        className="px-2 py-0.5 rounded-lg bg-emerald-950/90 hover:bg-emerald-900 border border-emerald-400/70 text-emerald-200 text-[10px] font-cinzel font-bold cursor-pointer"
+                  {activeTacticalConfig ? (
+                    <div className="flex flex-col items-center gap-2 max-w-full max-h-full">
+                      {mode === 'dm' && (
+                        <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900/95 border border-sky-500/50 shadow-lg z-30">
+                          <span className="text-[11px] font-cinzel font-bold text-sky-300">
+                            🗺️ {activeTacticalConfig.name} ({activeTacticalConfig.gridCols}x
+                            {activeTacticalConfig.gridRows})
+                          </span>
+                          <button
+                            type="button"
+                            data-testid="btn-live-tactical-add-players"
+                            onClick={handleDmAddPlayersToRichTacticalMap}
+                            className="px-2 py-0.5 rounded-lg bg-emerald-950/90 hover:bg-emerald-900 border border-emerald-400/70 text-emerald-200 text-[10px] font-cinzel font-bold cursor-pointer"
+                            title="Añadir fichas de los jugadores de la mesa al mapa táctico"
+                          >
+                            + Fichas Jugadores
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="btn-live-tactical-add-monster"
+                            onClick={handleDmAddMonsterToRichTacticalMap}
+                            className="px-2 py-0.5 rounded-lg bg-red-950/90 hover:bg-red-900 border border-red-400/70 text-red-200 text-[10px] font-cinzel font-bold cursor-pointer"
+                            title="Añadir ficha de monstruo/enemigo al mapa táctico en vivo"
+                          >
+                            + Ficha Monstruo
+                          </button>
+                          {isTacticalMapsAllowed && (
+                            <button
+                              type="button"
+                              data-testid="btn-open-tactical-studio-from-map"
+                              onClick={() => setIsTacticalStudioOpen(true)}
+                              className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold cursor-pointer"
+                            >
+                              Editar Capas / Props / FOW en Estudio
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <TacticalMapCanvas
+                        config={activeTacticalConfig}
+                        viewerRole={mode === 'dm' ? 'dm' : 'player'}
+                        currentPlayerCharacterId={character?.id}
+                        charactersById={tacticalCharactersById}
+                        zoom={mapZoom}
+                        onTokenMove={handleTacticalCanvasTokenMove}
+                        onDmModifyToken={
+                          mode === 'dm' ? handleDmModifyTacticalToken : undefined
+                        }
+                        onDmDeleteToken={
+                          mode === 'dm' ? handleDmDeleteTacticalToken : undefined
+                        }
+                      />
+                    </div>
+                  ) : (
+                    /* Fallback Simple Grid if no rich TacticalMapConfig exists */
+                    <div className="w-full h-full flex flex-col justify-between">
+                      {mode === 'dm' && (
+                        <div className="mt-12 mx-auto px-3 py-1.5 rounded-xl bg-black/85 border border-red-500/70 flex items-center gap-2 flex-wrap shadow-2xl z-20">
+                          <span className="text-[10px] font-cinzel font-bold text-red-300 uppercase">
+                            ⚔️ Cuadrícula Táctica ({activeTacticalGridCols}x{activeTacticalGridRows}):
+                          </span>
+                          <button
+                            type="button"
+                            data-testid="btn-tactical-populate-players"
+                            onClick={handlePopulatePlayersOnTacticalMap}
+                            className="px-2 py-0.5 rounded-lg bg-emerald-950/90 hover:bg-emerald-900 border border-emerald-400/70 text-emerald-200 text-[10px] font-cinzel font-bold cursor-pointer"
+                          >
+                            + Fichas Jugadores
+                          </button>
+                          <button
+                            type="button"
+                            data-testid="btn-tactical-add-enemy-token"
+                            onClick={handleAddEnemyTokenToTacticalMap}
+                            className="px-2 py-0.5 rounded-lg bg-red-950/90 hover:bg-red-900 border border-red-400/70 text-red-200 text-[10px] font-cinzel font-bold cursor-pointer"
+                          >
+                            + Ficha Enemigo
+                          </button>
+                        </div>
+                      )}
+
+                      <div
+                        className="relative flex-1 w-full h-full"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: `repeat(${activeTacticalGridCols}, minmax(0, 1fr))`,
+                          gridTemplateRows: `repeat(${activeTacticalGridRows}, minmax(0, 1fr))`,
+                        }}
                       >
-                        + Fichas Jugadores
-                      </button>
-                      <button
-                        type="button"
-                        data-testid="btn-tactical-add-enemy-token"
-                        onClick={handleAddEnemyTokenToTacticalMap}
-                        className="px-2 py-0.5 rounded-lg bg-red-950/90 hover:bg-red-900 border border-red-400/70 text-red-200 text-[10px] font-cinzel font-bold cursor-pointer"
-                      >
-                        + Ficha Enemigo
-                      </button>
-                      <span className="text-[10px] text-amber-200">
-                        {selectedTacticalTokenId
-                          ? 'Haz clic en una casilla para mover la ficha seleccionada'
-                          : 'Selecciona una ficha para moverla en la cuadrícula'}
-                      </span>
+                        {Array.from({
+                          length: activeTacticalGridCols * activeTacticalGridRows,
+                        }).map((_, cellIdx) => {
+                          const col = cellIdx % activeTacticalGridCols;
+                          const row = Math.floor(cellIdx / activeTacticalGridCols);
+                          const tokensInCell = activeTacticalTokens.filter(
+                            (t) => (t.col ?? t.x ?? 0) === col && (t.row ?? t.y ?? 0) === row
+                          );
+                          return (
+                            <div
+                              key={`cell-${col}-${row}`}
+                              data-testid={`tactical-cell-${col}-${row}`}
+                              onClick={() => handleMoveTokenOnActiveTacticalMap(col, row)}
+                              className={`border border-amber-300/20 flex items-center justify-center relative transition ${
+                                selectedTacticalTokenId
+                                  ? 'hover:bg-amber-400/20 cursor-pointer'
+                                  : ''
+                              }`}
+                            >
+                              {tokensInCell.map((tok) => {
+                                const isSelected = selectedTacticalTokenId === tok.id;
+                                const canSelectTok =
+                                  mode === 'dm' ||
+                                  (mode === 'player' &&
+                                    isTokenOwnedByPlayer(tok, character?.id));
+                                return (
+                                  <button
+                                    key={tok.id}
+                                    type="button"
+                                    data-testid={`tactical-token-${tok.id}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (canSelectTok) {
+                                        setSelectedTacticalTokenId(tok.id);
+                                      }
+                                    }}
+                                    className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center text-[9px] font-cinzel font-black text-white shadow-xl transition ${
+                                      canSelectTok ? 'cursor-pointer' : 'cursor-not-allowed opacity-90'
+                                    } ${
+                                      isSelected
+                                        ? 'ring-4 ring-amber-400 scale-110 z-20'
+                                        : 'border-2 border-white/90 z-10'
+                                    }`}
+                                    style={{
+                                      backgroundColor:
+                                        tok.color || (tok.kind === 'player' ? '#10b981' : '#ef4444'),
+                                    }}
+                                    title={`${tok.label} (${col}, ${row})`}
+                                  >
+                                    <span className="truncate px-0.5">
+                                      {(tok.label || tok.name || 'TOK').slice(0, 3).toUpperCase()}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
-
-                  {/* Clickable Grid Cells & Tokens */}
-                  <div
-                    className="relative flex-1 w-full h-full"
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: `repeat(${activeTacticalGridCols}, minmax(0, 1fr))`,
-                      gridTemplateRows: `repeat(${activeTacticalGridRows}, minmax(0, 1fr))`,
-                    }}
-                  >
-                    {Array.from({ length: activeTacticalGridCols * activeTacticalGridRows }).map(
-                      (_, cellIdx) => {
-                        const col = cellIdx % activeTacticalGridCols;
-                        const row = Math.floor(cellIdx / activeTacticalGridCols);
-                        const tokensInCell = activeTacticalTokens.filter(
-                          (t) => (t.col ?? t.x ?? 0) === col && (t.row ?? t.y ?? 0) === row
-                        );
-                        return (
-                          <div
-                            key={`cell-${col}-${row}`}
-                            data-testid={`tactical-cell-${col}-${row}`}
-                            onClick={() => handleMoveTokenOnActiveTacticalMap(col, row)}
-                            className={`border border-amber-300/20 flex items-center justify-center relative transition ${
-                              mode === 'dm' && selectedTacticalTokenId
-                                ? 'hover:bg-amber-400/20 cursor-pointer'
-                                : ''
-                            }`}
-                          >
-                            {tokensInCell.map((tok) => {
-                              const isSelected = selectedTacticalTokenId === tok.id;
-                              return (
-                                <button
-                                  key={tok.id}
-                                  type="button"
-                                  data-testid={`tactical-token-${tok.id}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (mode === 'dm') {
-                                      setSelectedTacticalTokenId(tok.id);
-                                    }
-                                  }}
-                                  className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full flex items-center justify-center text-[9px] font-cinzel font-black text-white shadow-xl transition cursor-pointer ${
-                                    isSelected
-                                      ? 'ring-4 ring-amber-400 scale-110 z-20'
-                                      : 'border-2 border-white/90 z-10'
-                                  }`}
-                                  style={{
-                                    backgroundColor:
-                                      tok.color || (tok.kind === 'player' ? '#10b981' : '#ef4444'),
-                                  }}
-                                  title={`${tok.label} (${col}, ${row})`}
-                                >
-                                  <span className="truncate px-0.5">
-                                    {tok.label.slice(0, 3).toUpperCase()}
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        );
-                      }
-                    )}
-                  </div>
                 </div>
               )}
 
@@ -2342,18 +3047,33 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
                           >
                             Mapa e Imágenes ({filteredAlbumPhotos.length + filteredZoneMaps.length + 1})
                           </button>
-                          <button
-                            type="button"
-                            data-testid="tab-dm-projection-tactical"
-                            disabled
-                            title="Los Mapas Tácticos interactivos están en desarrollo y próximamente disponibles."
-                            className="py-1.5 px-2 rounded-xl font-cinzel font-bold text-[10px] border bg-stone-900/70 border-stone-800 text-stone-500 opacity-60 cursor-not-allowed flex flex-col items-center justify-center gap-0.5"
-                          >
-                            <span>Mapas Tácticos</span>
-                            <span className="text-[8px] px-1.5 py-0.2 rounded bg-amber-950/70 border border-amber-600/50 text-amber-300 uppercase tracking-wider">
-                              En Desarrollo
-                            </span>
-                          </button>
+                          {isTacticalMapsAllowed ? (
+                            <button
+                              type="button"
+                              data-testid="tab-dm-projection-tactical"
+                              onClick={() => setDmProjectionTab('tactical')}
+                              className={`py-1.5 px-2 rounded-xl font-cinzel font-bold text-[11px] border transition cursor-pointer ${
+                                dmProjectionTab === 'tactical'
+                                  ? 'bg-sky-950/80 border-sky-400 text-sky-100'
+                                  : 'bg-[#181a24] border-stone-700 text-stone-300 hover:text-white'
+                              }`}
+                            >
+                              Mapas Tácticos ({filteredTacticalMaps.length})
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              data-testid="tab-dm-projection-tactical"
+                              disabled
+                              title="Los Mapas Tácticos están en progreso para el rol de cliente."
+                              className="py-1.5 px-2 rounded-xl font-cinzel font-bold text-[10px] border bg-stone-900/70 border-stone-800 text-stone-500 opacity-60 cursor-not-allowed flex flex-col items-center justify-center gap-0.5"
+                            >
+                              <span>Mapas Tácticos</span>
+                              <span className="text-[8px] px-1.5 py-0.2 rounded bg-amber-950/70 border border-amber-600/50 text-amber-300 uppercase tracking-wider">
+                                En Progreso
+                              </span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             data-testid="tab-dm-projection-queue"
@@ -2756,6 +3476,19 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
                           </>
                         ) : dmProjectionTab === 'tactical' ? (
                           <div className="space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-cinzel font-bold text-sky-300">
+                                Tableros Tácticos de {currentPlaceShortName}
+                              </span>
+                              <button
+                                type="button"
+                                data-testid="btn-open-full-tactical-studio-tab"
+                                onClick={() => setIsTacticalStudioOpen(true)}
+                                className="px-3 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-cinzel font-bold text-[10px] cursor-pointer shadow"
+                              >
+                                ✨ Abrir Estudio de Mapas Tácticos (Capas, Props y FOW)
+                              </button>
+                            </div>
                             {filteredTacticalMaps.length > 0 ? (
                               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[145px] overflow-y-auto pr-1">
                                 {filteredTacticalMaps.map((tMap) => {
@@ -3104,7 +3837,18 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
         {/* ================================================================= */}
         <div className="flex flex-col justify-between gap-2.5 min-w-0">
           {/* 1. SALA EN VIVO: CARTAS DE MONSTRUOS Y ENEMIGOS EN MESA */}
-          <div className="bg-gradient-to-b from-[#171820] via-[#13141b] to-[#101117] border-2 border-[#c8a45c]/75 rounded-2xl p-3 shadow-xl space-y-2">
+          <div
+            data-testid="map-enemies-row-block"
+            className="bg-gradient-to-b from-[#171820] via-[#13141b] to-[#101117] border-2 border-[#c8a45c]/75 rounded-2xl p-3 shadow-xl space-y-2"
+            style={
+              mode === 'player'
+                ? buildSpatialBlockInlineStyle(resolvedPlayerMap.blocks.map_enemies_row)
+                : {
+                    backgroundColor: activeDmSkinTokens?.dmCombatTrackerBg || undefined,
+                    borderColor: activeDmSkinTokens?.dmCombatEnemyBorder || undefined,
+                  }
+            }
+          >
             <div className="flex items-center justify-between border-b border-[#c8a45c]/35 pb-1.5">
               <div>
                 <h3 className="font-cinzel font-black text-xs sm:text-sm text-[#f5e4be] uppercase tracking-wider leading-none">
@@ -3244,7 +3988,18 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
           </div>
 
           {/* 2. HISTORIAL DE DADOS TIRADOS Y ÚLTIMOS DADOS */}
-          <div className="bg-gradient-to-b from-[#171820] to-[#111218] border-2 border-[#c8a45c]/75 rounded-2xl p-3 shadow-xl space-y-2">
+          <div
+            data-testid="map-dice-log-block"
+            className="bg-gradient-to-b from-[#171820] to-[#111218] border-2 border-[#c8a45c]/75 rounded-2xl p-3 shadow-xl space-y-2"
+            style={
+              mode === 'player'
+                ? buildSpatialBlockInlineStyle(resolvedPlayerMap.blocks.map_dice_log)
+                : {
+                    backgroundColor: activeDmSkinTokens?.dmRollFeedBg || undefined,
+                    borderColor: activeDmSkinTokens?.dmRollFeedBorder || undefined,
+                  }
+            }
+          >
             <h3 className="font-cinzel font-black text-xs text-[#f5e4be] uppercase tracking-wider text-center">
               HISTORIAL DE DADOS TIRADOS Y ÚLTIMOS DADOS
             </h3>
@@ -3432,6 +4187,13 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
       <div
         data-testid="map-bottom-player-cards-bar"
         className="w-full rounded-2xl bg-gradient-to-r from-[#171822] via-[#13141c] to-[#171822] border-2 border-[#c8a45c]/80 p-3 shadow-2xl space-y-2.5"
+        style={
+          mode === 'player'
+            ? buildSpatialBlockInlineStyle(resolvedPlayerMap.blocks.map_player_tarot_dock)
+            : {
+                borderColor: activeDmSkinTokens?.dmScreenBaseBorder || undefined,
+              }
+        }
       >
         <div className="flex items-center justify-between border-b border-[#c8a45c]/35 pb-1.5">
           <div className="flex items-center gap-2">
@@ -3777,6 +4539,80 @@ export const TableMapView: React.FC<TableMapViewProps> = ({
             </div>
           </form>
         </div>
+      )}
+
+      {/* 5. Full Tactical Map Studio Modal */}
+      {isTacticalStudioOpen && mode === 'dm' && workspace && (
+        <TacticalMapStudioModal
+          isOpen={isTacticalStudioOpen}
+          onClose={() => setIsTacticalStudioOpen(false)}
+          initialConfig={
+            activeTacticalConfig ||
+            createDefaultTacticalMapConfig(
+              selectedFolder !== 'all'
+                ? `Mapa Táctico - ${currentPlaceShortName}`
+                : 'Mapa Táctico - Taberna en Duelo'
+            )
+          }
+          savedTacticalLocations={filteredTacticalMaps}
+          partyCharacters={resolvedPlayerCards.map((pm) => ({
+            id: pm.characterId,
+            name: pm.characterName,
+            race: pm.race || 'Humano',
+            characterClass: (pm.characterClass as any) || 'Guerrero',
+            subclass: '',
+            level: pm.level || 1,
+            xp: 0,
+            background: '',
+            alignment: pm.alignment || 'Neutral Bueno',
+            playerName: pm.playerName || 'Jugador',
+            avatarUrl: pm.avatarUrl,
+            playerSkinId: pm.playerSkinId,
+            ac: pm.ac || 15,
+            hpCurrent: pm.currentHp ?? pm.hpCurrent ?? 20,
+            hpMax: pm.maxHp ?? pm.hpMax ?? 20,
+            hpTemp: 0,
+            speed: 30,
+            initiativeBonus: 0,
+            proficiencyBonus: 2,
+            inspiration: false,
+            hitDiceTotal: '1d10',
+            hitDiceRemaining: 1,
+            deathSaves: { successes: 0, failures: 0 },
+            exhaustion: 0,
+            conditions: pm.conditions || [],
+            concentration: '',
+            abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+            savingThrows: {
+              str: false,
+              dex: false,
+              con: false,
+              int: false,
+              wis: false,
+              cha: false,
+            },
+            skills: {} as any,
+            attacks: [],
+            spellcastingAbility: 'int',
+            spellSaveDC: 10,
+            spellAttackBonus: 2,
+            spellSlots: {},
+            spells: [],
+            inventory: [],
+            coins: { cp: 0, sp: 0, ep: 0, gp: pm.gp ?? 50, pp: 0 },
+            featuresTraits: '',
+            proficienciesLanguages: '',
+            personalityTraits: '',
+            ideals: '',
+            bonds: '',
+            flaws: '',
+            backstory: '',
+            notes: '',
+          }))}
+          monsters={workspace.monsters || []}
+          onSaveTacticalMap={handleSaveTacticalMapFromTable}
+          onProjectLiveToPlayers={handleProjectTacticalMapFromTable}
+        />
       )}
     </div>
   );

@@ -2571,7 +2571,42 @@ apiRouter.post('/session/room/:roomCode/dm-heartbeat', (req, res) => {
     room.liveCombatants = liveCombatants;
   }
   if (liveProjection && typeof liveProjection === 'object') {
-    room.liveProjection = liveProjection;
+    const prevTactical = room.liveProjection?.tacticalConfig;
+    const nextTactical = liveProjection.tacticalConfig;
+    const recentlyUpdatedByPlayer =
+      (room as any).lastPlayerTacticalMoveAt &&
+      Date.now() - (room as any).lastPlayerTacticalMoveAt < 8000;
+
+    if (
+      recentlyUpdatedByPlayer &&
+      prevTactical &&
+      nextTactical &&
+      prevTactical.id === nextTactical.id &&
+      Array.isArray(prevTactical.tokens) &&
+      Array.isArray(nextTactical.tokens)
+    ) {
+      const mergedTokens = nextTactical.tokens.map((nt: any) => {
+        const pt = prevTactical.tokens.find((t: any) => t.id === nt.id);
+        if (pt && (pt.tokenType === 'player' || pt.kind === 'player')) {
+          return {
+            ...nt,
+            col: pt.col,
+            row: pt.row,
+            layerId: pt.layerId,
+          };
+        }
+        return nt;
+      });
+      room.liveProjection = {
+        ...liveProjection,
+        tacticalConfig: {
+          ...nextTactical,
+          tokens: mergedTokens,
+        },
+      };
+    } else {
+      room.liveProjection = liveProjection;
+    }
   }
   room.lastUpdated = Date.now();
   res.json({
@@ -2653,6 +2688,157 @@ apiRouter.post('/session/room/:roomCode/dm-adjust-player', (req, res) => {
     currency: newCurrency,
     dmModifiedAt: now,
     party: Object.values(room.party),
+  });
+});
+
+// 2b-ter. Live Tactical Token Move / Modify (DM can move/modify any player or monster token; Player can only move their own token)
+apiRouter.post('/session/room/:roomCode/tactical-token', (req, res) => {
+  const normCode = req.params.roomCode.trim().toUpperCase();
+  const room = getOrCreateRoom(normCode);
+  const {
+    actorMode,
+    actorCharacterId,
+    action,
+    tokenId,
+    targetCol,
+    targetRow,
+    newLayerId,
+    patch,
+    tacticalConfig,
+  } = req.body || {};
+
+  const isPlayerActor = actorMode === 'player';
+
+  // Players can ONLY perform 'move' on their own token
+  if (isPlayerActor && action !== 'move') {
+    return res.status(403).json({
+      error: 'Los jugadores solo pueden mover su propia ficha; solo el Dungeon Master puede modificar fichas.',
+    });
+  }
+
+  let currentTactical = room.liveProjection?.tacticalConfig || tacticalConfig;
+  if (!currentTactical || !Array.isArray(currentTactical.tokens)) {
+    return res.status(400).json({ error: 'No hay un mapa táctico activo en la sala.' });
+  }
+
+  if (isPlayerActor) {
+    const cleanCharId = String(actorCharacterId || '').trim();
+    const targetTok = currentTactical.tokens.find((t: any) => t.id === tokenId);
+    const ownsToken =
+      targetTok &&
+      (targetTok.tokenType === 'player' || targetTok.kind === 'player') &&
+      cleanCharId &&
+      (targetTok.characterId === cleanCharId ||
+        targetTok.linkedId === cleanCharId ||
+        targetTok.id === cleanCharId ||
+        targetTok.id === `token-player-${cleanCharId}` ||
+        targetTok.id === `tok-player-${cleanCharId}`);
+
+    if (!ownsToken) {
+      return res.status(403).json({
+        error: 'Solo puedes mover la ficha de tu propio personaje.',
+      });
+    }
+
+    currentTactical = {
+      ...currentTactical,
+      tokens: currentTactical.tokens.map((t: any) =>
+        t.id === tokenId
+          ? {
+              ...t,
+              col: typeof targetCol === 'number' ? targetCol : t.col,
+              row: typeof targetRow === 'number' ? targetRow : t.row,
+              layerId: newLayerId || t.layerId,
+            }
+          : t
+      ),
+    };
+    (room as any).lastPlayerTacticalMoveAt = Date.now();
+  } else {
+    (room as any).lastPlayerTacticalMoveAt = 0;
+    // DM can move, modify, delete, or replace_config for any player or monster token
+    if (action === 'replace_config' && tacticalConfig) {
+      currentTactical = tacticalConfig;
+    } else if (action === 'delete' && tokenId) {
+      currentTactical = {
+        ...currentTactical,
+        tokens: currentTactical.tokens.filter((t: any) => t.id !== tokenId),
+      };
+    } else if (action === 'move' && tokenId) {
+      currentTactical = {
+        ...currentTactical,
+        tokens: currentTactical.tokens.map((t: any) =>
+          t.id === tokenId
+            ? {
+                ...t,
+                col: typeof targetCol === 'number' ? targetCol : t.col,
+                row: typeof targetRow === 'number' ? targetRow : t.row,
+                layerId: newLayerId || t.layerId,
+              }
+            : t
+        ),
+      };
+    } else if (action === 'modify' && tokenId && patch) {
+      currentTactical = {
+        ...currentTactical,
+        tokens: currentTactical.tokens.map((t: any) =>
+          t.id === tokenId ? { ...t, ...patch } : t
+        ),
+      };
+    } else if (tacticalConfig) {
+      currentTactical = tacticalConfig;
+    }
+  }
+
+  if (room.liveProjection) {
+    room.liveProjection = {
+      ...room.liveProjection,
+      visualKind: 'tactical',
+      tacticalConfig: currentTactical,
+    };
+  } else {
+    room.liveProjection = {
+      locationFolder: 'General',
+      locationName: currentTactical.name || 'Mapa Táctico',
+      visualKind: 'tactical',
+      visualTitle: currentTactical.name || 'Mapa Táctico',
+      visualImageUrl: currentTactical.layers?.[0]?.bgImageUrl || '',
+      galleryPhotos: [],
+      tacticalConfig: currentTactical,
+      updatedAt: Date.now(),
+    };
+  }
+  room.lastUpdated = Date.now();
+
+  // Also persist into matching WorldSheet workspace in dataStore so DM heartbeats stay in sync
+  const allWorlds = dataStore.getWorldSheets();
+  const matchingWorld = allWorlds.find(
+    (w) => normalizeRoomIdentifier(w.roomCode || w.name) === normalizeRoomIdentifier(normCode)
+  );
+  if (matchingWorld && matchingWorld.workspace) {
+    if (matchingWorld.workspace.activeLiveVisual?.kind === 'tactical') {
+      matchingWorld.workspace.activeLiveVisual = {
+        ...matchingWorld.workspace.activeLiveVisual,
+        tacticalConfig: currentTactical,
+      };
+    }
+    if (Array.isArray(matchingWorld.workspace.locations)) {
+      matchingWorld.workspace.locations = matchingWorld.workspace.locations.map((loc) =>
+        loc.tacticalConfig?.id === currentTactical.id
+          ? { ...loc, tacticalConfig: currentTactical }
+          : loc
+      );
+    }
+    matchingWorld.updatedAt = Date.now();
+    try {
+      dataStore.saveWorldSheet(matchingWorld);
+    } catch {}
+  }
+
+  res.json({
+    success: true,
+    tacticalConfig: currentTactical,
+    liveProjection: room.liveProjection,
   });
 });
 

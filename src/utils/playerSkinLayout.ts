@@ -2678,12 +2678,15 @@ export function buildSpatialBlockInlineStyle(
   const isPolygon = Boolean(clipPath);
 
   return {
+    order: block.order,
+    position: 'relative',
     opacity: block.opacity,
     clipPath,
     WebkitClipPath: clipPath,
     maskImage,
     WebkitMaskImage: maskImage,
     backgroundColor: applyColorWithOpacity(block.bgColor, block.boxBgOpacity),
+    color: block.textColor || undefined,
     borderColor:
       isPolygon || block.hideBorder || block.borderWidthPx <= 0
         ? 'transparent'
@@ -2713,6 +2716,85 @@ export function buildSpatialBlockInlineStyle(
     transformOrigin: 'top left',
     fontFamily: block.fontFamily || undefined,
   };
+}
+
+export function buildInnerButtonInlineStyle(
+  block?: SpatialBlockConfig<any> | null,
+  buttonId?: string
+): CSSProperties {
+  if (!block || !buttonId) return {};
+  const rawButtons = block.innerButtonsConfig as any;
+  const btn: SpatialInnerElementConfig | undefined = Array.isArray(rawButtons)
+    ? rawButtons.find((b: any) => b?.id === buttonId)
+    : rawButtons?.[buttonId];
+  if (!btn) return {};
+  if (btn.visible === false || (btn.opacity !== undefined && btn.opacity <= 0.005)) {
+    return { display: 'none' };
+  }
+  const clipPath = getGeometricClipPath(btn.shape);
+  const maskImage = getEdgeFadeMaskCss(btn.edgeFadePercent);
+  const isPolygon = Boolean(clipPath);
+  const isCircle = btn.shape === 'circle';
+  const isSquare = btn.shape === 'square';
+  const dx = btn.x ?? 0;
+  const dy = btn.y ?? 0;
+
+  return {
+    position: 'relative',
+    opacity: btn.opacity !== undefined ? btn.opacity : undefined,
+    clipPath,
+    WebkitClipPath: clipPath,
+    maskImage,
+    WebkitMaskImage: maskImage,
+    backgroundColor: btn.bgColor ? applyColorWithOpacity(btn.bgColor, btn.bgOpacity ?? 1) : undefined,
+    color: btn.textColor || undefined,
+    borderColor: isPolygon || btn.hideBorder ? 'transparent' : btn.borderColor || undefined,
+    borderWidth:
+      isPolygon || btn.hideBorder
+        ? 0
+        : btn.borderWidthPx !== undefined
+        ? `${btn.borderWidthPx}px`
+        : undefined,
+    borderStyle: isPolygon || btn.hideBorder ? 'none' : btn.borderWidthPx !== undefined ? 'solid' : undefined,
+    borderRadius: isPolygon
+      ? 0
+      : isCircle
+      ? '9999px'
+      : isSquare
+      ? '0px'
+      : btn.borderRadiusPx !== undefined
+      ? `${btn.borderRadiusPx}px`
+      : undefined,
+    width: btn.widthPx && btn.widthPx > 0 ? `${btn.widthPx}px` : undefined,
+    minHeight: btn.heightPx && btn.heightPx > 0 ? `${btn.heightPx}px` : undefined,
+    backgroundImage: (btn as any).customPngUrl ? `url(${(btn as any).customPngUrl})` : undefined,
+    backgroundSize:
+      (btn as any).customPngFit === 'stretch'
+        ? '100% 100%'
+        : (btn as any).customPngFit === 'contain'
+        ? 'contain'
+        : (btn as any).customPngUrl
+        ? 'cover'
+        : undefined,
+    backgroundPosition: (btn as any).customPngUrl ? 'center' : undefined,
+    backgroundRepeat: (btn as any).customPngUrl ? 'no-repeat' : undefined,
+    transform: dx !== 0 || dy !== 0 ? `translate(${dx}px, ${dy}px)` : undefined,
+    fontFamily: btn.fontFamily || block.fontFamily || undefined,
+    fontSize: btn.fontSizePx ? `${btn.fontSizePx}px` : undefined,
+    fontWeight: (btn as any).fontWeight || undefined,
+  };
+}
+
+export function getInnerButtonLabel(
+  block: SpatialBlockConfig<any> | null | undefined,
+  buttonId: string,
+  fallbackLabel: string
+): string {
+  const rawButtons = block?.innerButtonsConfig as any;
+  const btn: SpatialInnerElementConfig | undefined = Array.isArray(rawButtons)
+    ? rawButtons.find((b: any) => b?.id === buttonId)
+    : rawButtons?.[buttonId];
+  return btn?.label?.trim() ? btn.label : fallbackLabel;
 }
 
 export function buildGeometricElementStyle(params: {

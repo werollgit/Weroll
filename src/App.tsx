@@ -2732,6 +2732,7 @@ export default function App() {
             mode={appView === 'dm-session' ? 'dm' : 'player'}
             roomCode={roomCode}
             worldName={activeWorld?.name}
+            currentUserRole={authUser?.role || 'client'}
             character={activeCharacter}
             onUpdateCharacter={handleUpdateCharacter}
             workspace={dmWorkspace}
